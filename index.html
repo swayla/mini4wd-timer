@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>四驅車雙道計時</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Semi+Condensed:wght@500;700&family=Noto+Sans+TC:wght@400;500;700&display=swap">
+<style>
+/* Layout: 計時看板 — 頂部狀態列，兩塊車道看板並排（窄螢幕仍並排），下方操作與設定 */
+:root {
+  --bg: #EDF0F4; --panel: #FFFFFF; --ink: #131720; --muted: #5A6373; --line: #D3D9E2;
+  --car1: #1E5CCF; --car2: #D3302A; --flag: #E9AE00; --ok: #17935A; --warn: #C96A00;
+  --soft: #E3E8EF;
+  --f-num: "Saira Semi Condensed", "Arial Narrow", "Roboto Condensed", sans-serif;
+  --f-body: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0E1218; --panel: #161B24; --ink: #E7EBF1; --muted: #949EAE; --line: #283041;
+  --car1: #5A8CF0; --car2: #F0615A; --flag: #F3C232; --ok: #3CC583; --warn: #F0A040; --soft: #1D2330;
+  color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #0E1218; --panel: #161B24; --ink: #E7EBF1; --muted: #949EAE; --line: #283041;
+  --car1: #5A8CF0; --car2: #F0615A; --flag: #F3C232; --ok: #3CC583; --warn: #F0A040; --soft: #1D2330;
+  color-scheme: dark }
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 15px; line-height: 1.5; }
+.wrap { max-width: 980px; margin: 0 auto; padding-block: 14px 40px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 14px; }
+
+header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+header h1 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: .02em; flex: 1 1 auto; text-wrap: balance; }
+.pill { font-size: 13px; padding: 3px 10px; border-radius: 99px; background: var(--soft); color: var(--muted); white-space: nowrap; }
+.pill.on { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
+.pill.demo { background: color-mix(in srgb, var(--flag) 22%, transparent); color: var(--ink); }
+
+button { font: inherit; cursor: pointer; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); padding: 8px 14px; }
+button:hover { border-color: var(--muted); }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid color-mix(in srgb, var(--car1) 55%, transparent); outline-offset: 2px; }
+button.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); font-weight: 700; }
+button:disabled { opacity: .45; cursor: default; }
+
+.strip { display: flex; align-items: center; gap: 10px 18px; flex-wrap: wrap; padding: 10px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.mode { font-weight: 700; font-size: 16px; }
+.mode small { font-weight: 400; color: var(--muted); font-size: 13px; margin-left: 6px; }
+.beams { display: flex; gap: 12px; margin-left: auto; font-size: 13px; color: var(--muted); }
+.beam::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--ok); margin-right: 5px; vertical-align: 1px; }
+.beam.bad { color: var(--warn); font-weight: 700; }
+.beam.bad::before { background: var(--warn); }
+.beam.unknown::before { background: var(--line); }
+
+.notice { padding: 10px 14px; border-radius: 12px; background: color-mix(in srgb, var(--warn) 12%, var(--panel)); border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); font-size: 14px; }
+.notice b { color: var(--warn); }
+
+.boards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.board { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; min-width: 0; display: flex; flex-direction: column; }
+.board::before { content: ""; height: 6px; background: var(--c); }
+.board.c1 { --c: var(--car1); } .board.c2 { --c: var(--car2); }
+.board.off { opacity: .4; }
+.bhead { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 10px 14px 0; flex-wrap: wrap; }
+.bname { font-weight: 700; font-size: 17px; color: var(--c); }
+.bsub { font-size: 12px; color: var(--muted); }
+.place { font-family: var(--f-num); font-weight: 700; font-size: 14px; padding: 1px 10px 1px 26px; border-radius: 6px; position: relative; color: var(--ink); background: var(--soft); }
+.place::before { content: ""; position: absolute; left: 6px; top: 50%; width: 14px; height: 14px; margin-top: -7px; border-radius: 2px;
+  background: conic-gradient(var(--ink) 25%, var(--panel) 0 50%, var(--ink) 0 75%, var(--panel) 0) 0 0 / 7px 7px; border: 1px solid var(--ink); }
+.big { padding: 4px 14px 2px; }
+.big .lbl { font-size: 12px; color: var(--muted); letter-spacing: .06em; }
+.time { font-family: var(--f-num); font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1; }
+.live { font-size: clamp(34px, 9vw, 64px); }
+.live .u { font-size: .35em; color: var(--muted); font-weight: 500; margin-left: 4px; }
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--line); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin-top: 10px; }
+.stats div { background: var(--panel); padding: 7px 10px; min-width: 0; }
+.stats span { display: block; font-size: 11px; color: var(--muted); letter-spacing: .04em; }
+.stats b { font-family: var(--f-num); font-size: clamp(16px, 4vw, 22px); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.stats b.best { color: var(--flag); }
+.laps { max-height: 320px; overflow-y: auto; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+td, th { padding: 5px 10px; text-align: right; font-size: 14px; border-bottom: 1px solid var(--soft); white-space: nowrap; }
+th { font-size: 11px; color: var(--muted); font-weight: 500; position: sticky; top: 0; background: var(--panel); }
+td:first-child, th:first-child { text-align: left; color: var(--muted); }
+td.t { font-family: var(--f-num); font-size: 16px; font-weight: 700; }
+tr.isbest td.t { color: var(--flag); }
+td.d { color: var(--muted); font-size: 12px; }
+.empty { padding: 16px 14px; color: var(--muted); font-size: 13px; }
+
+.controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.controls .primary { padding: 12px 22px; font-size: 17px; }
+.controls .grow { flex: 1 1 auto; }
+
+details { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+summary { padding: 11px 14px; cursor: pointer; font-weight: 700; }
+.settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px 18px; padding: 4px 14px 16px; }
+.field { display: grid; gap: 4px; min-width: 0; }
+.field label { font-size: 13px; font-weight: 500; }
+.field small { font-size: 12px; color: var(--muted); }
+input[type=number], select { font: inherit; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); width: 100%; }
+.check { display: flex; gap: 8px; align-items: center; font-size: 14px; }
+.check input { width: 18px; height: 18px; }
+
+.overlay { position: fixed; inset: 0; display: grid; place-items: center; background: color-mix(in srgb, var(--bg) 70%, transparent); z-index: 20; pointer-events: none; }
+.overlay .n { font-family: var(--f-num); font-weight: 700; font-size: min(40vw, 260px); line-height: 1; color: var(--ink); }
+.overlay .n.go { color: var(--ok); }
+.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom, 0px)); background: var(--ink); color: var(--bg); padding: 9px 16px; border-radius: 10px; font-size: 14px; z-index: 30; max-width: calc(100% - 32px); }
+dialog { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); color: var(--ink); width: min(560px, calc(100% - 32px)); padding: 16px; }
+dialog::backdrop { background: rgb(0 0 0 / .35); }
+dialog textarea { width: 100%; height: 220px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+.drow { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+.foot { font-size: 12px; color: var(--muted); }
+@media (max-width: 520px) { .stats b { font-size: 15px; } td, th { padding: 4px 6px; } td.t { font-size: 14px; } .bhead { padding: 8px 10px 0; } .big { padding: 2px 10px; } }
+@media (prefers-reduced-motion: no-preference) { .overlay .n { animation: pop .35s ease-out; } @keyframes pop { from { transform: scale(1.25); opacity: .3; } } }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <h1>四驅車雙道計時</h1>
+    <span class="pill" id="connPill">未連線</span>
+    <button id="btnDemo" type="button">示範模式</button>
+    <button id="btnConnect" class="primary" type="button">連線計時器</button>
+  </header>
+
+  <div class="notice" id="btNotice" hidden></div>
+
+  <div class="strip">
+    <div class="mode" id="modeText">過線計時<small>示範資料</small></div>
+    <div class="beams"><span class="beam unknown" id="beamA">A道光束</span><span class="beam unknown" id="beamB">B道光束</span></div>
+  </div>
+
+  <div class="boards">
+    <section class="board c1" id="board1"></section>
+    <section class="board c2" id="board2"></section>
+  </div>
+
+  <div class="controls">
+    <button id="btnStart" class="primary" type="button">開始比賽（倒數同時起跑）</button>
+    <button id="btnReset" type="button">重置</button>
+    <span class="grow"></span>
+    <button id="btnExport" type="button">匯出成績</button>
+  </div>
+
+  <details id="setBox">
+    <summary>設定</summary>
+    <div class="settings">
+      <div class="field"><label for="setLaps">比賽圈數</label><input id="setLaps" type="number" min="0" max="99" value="3"><small>按「開始比賽」時使用，0 = 不限圈數</small></div>
+      <div class="field"><label for="setCars">參賽車輛</label>
+        <select id="setCars"><option value="3">兩台（1號A道、2號B道出發）</option><option value="1">只有1號車（A道出發）</option><option value="2">只有2號車（B道出發）</option></select>
+        <small>車子要放在對應的車道出發</small></div>
+      <div class="field"><label for="setDeb">防重複觸發（毫秒）</label><input id="setDeb" type="number" min="50" max="3000" step="50" value="300"><small>同一道觸發後忽略的時間</small></div>
+      <div class="field"><label for="setIgn">起跑線忽略（毫秒）</label><input id="setIgn" type="number" min="0" max="10000" step="100" value="1500"><small>GO 後這段時間內過線不算一圈</small></div>
+      <label class="check"><input id="setCross" type="checkbox" checked> 立體交叉軌道（每圈換道）</label>
+      <label class="check"><input id="setVoice" type="checkbox"> 語音播報圈時</label>
+    </div>
+  </details>
+
+  <p class="foot">電腦與 Android 用 Chrome 或 Edge 開啟；iPhone 用 Bluefy 瀏覽器開啟。時間由計時器以微秒記錄，藍芽延遲不影響成績。</p>
+</div>
+
+<div class="overlay" id="overlay" hidden><div class="n" id="ovNum">3</div></div>
+<div class="toast" id="toast" hidden></div>
+
+<dialog id="exportDlg">
+  <strong>成績（CSV）</strong>
+  <p class="foot">按「複製」後貼到 Excel、Google 試算表或記事本。</p>
+  <textarea id="csvBox" readonly></textarea>
+  <div class="drow"><button id="btnCopy" type="button">複製</button><button id="btnCloseDlg" class="primary" type="button">關閉</button></div>
+</dialog>
+
+<script>
+const NUS = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const NUS_RX = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+const NUS_TX = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+const $ = id => document.getElementById(id);
+const fmt = us => (us / 1e6).toFixed(3);
+const CAR_NAME = ['1號車', '2號車'];
+
+const S = {
+  conn: 'none',          // none | ble | demo
+  mode: 'FREE',
+  cfg: { laps: 3, cross: true, cars: 3, deb: 300, ign: 1500 },
+  cars: [newCar(true), newCar(true)],
+  sample: true,
+};
+function newCar(active) { return { active, started: false, lastLocal: 0, laps: [], best: 0, total: 0, finished: false, place: 0, summaryLaps: 0 }; }
+
+/* ── 示範資料（首次開啟時顯示）── */
+(function seed() {
+  const a = [5412300, 5288100, 5351900, 5240600, 5319800], b = [5634100, 5502700, 5577400, 5489900, 5561200];
+  [a, b].forEach((arr, i) => {
+    let tot = 0;
+    arr.forEach((lap, k) => { tot += lap; addLap(i, k + 1, lap, tot, (i + k) % 2 ? 'B' : 'A'); });
+  });
+})();
+
+function addLap(i, n, lapUs, totalUs, lane) {
+  const c = S.cars[i];
+  c.laps.push({ n, lapUs, totalUs, lane });
+  if (!c.best || lapUs < c.best) c.best = lapUs;
+  c.total = totalUs;
+}
+
+/* ── 繪製看板 ── */
+function renderBoard(i) {
+  const c = S.cars[i], el = $('board' + (i + 1));
+  el.classList.toggle('off', !c.active);
+  const startLane = i === 0 ? 'A' : 'B';
+  const rows = c.laps.slice().reverse().map(l => {
+    const d = l.lapUs - c.best;
+    return `<tr class="${l.lapUs === c.best ? 'isbest' : ''}"><td>${l.n}</td><td class="t">${fmt(l.lapUs)}</td><td class="d">${d ? '+' + (d / 1e6).toFixed(3) : '最快'}</td><td class="d">${l.lane}</td></tr>`;
+  }).join('');
+  const lapCount = c.laps.length || c.summaryLaps;
+  const target = S.mode !== 'FREE' && S.cfg.laps ? ` / ${S.cfg.laps}` : '';
+  const last = c.laps.length ? c.laps[c.laps.length - 1].lapUs : 0;
+  el.innerHTML = `
+    <div class="bhead"><span class="bname">${CAR_NAME[i]}</span>
+      ${c.place ? `<span class="place">第 ${c.place} 名</span>` : `<span class="bsub">${c.active ? startLane + '道出發' : '未參賽'}</span>`}</div>
+    <div class="big"><div class="lbl" id="lbl${i}">${liveLabel(c)}</div>
+      <div class="time live"><span id="live${i}">${c.finished ? fmt(c.total) : (last ? fmt(last) : '0.000')}</span><span class="u">秒</span></div></div>
+    <div class="stats">
+      <div><span>圈數</span><b>${lapCount}${target}</b></div>
+      <div><span>最快圈</span><b class="best">${c.best ? fmt(c.best) : '—'}</b></div>
+      <div><span>總時間</span><b>${c.total ? fmt(c.total) : '—'}</b></div>
+    </div>
+    <div class="laps">${rows ? `<table><thead><tr><th>圈</th><th>圈時（秒）</th><th>差最快</th><th>車道</th></tr></thead><tbody>${rows}</tbody></table>`
+      : `<div class="empty">${c.active ? (c.started ? '計時中，等待過線…' : '車子第一次過線後開始計時') : '設定裡把這台車加入即可計時'}</div>`}</div>`;
+}
+function liveLabel(c) {
+  if (c.finished) return '完賽總時間';
+  if (c.started && !c.finished && S.mode !== 'FINISHED' && !S.sample) return '本圈進行中';
+  return '上一圈';
+}
+function renderMode() {
+  const m = { FREE: '過線計時', COUNTDOWN: '倒數中', RACE: '比賽中', FINISHED: '完賽' }[S.mode] || S.mode;
+  const note = S.sample ? '示範資料' : S.mode === 'FREE' ? '每台車第一次過線開始計時' : S.mode === 'RACE' ? (S.cfg.laps ? `目標 ${S.cfg.laps} 圈` : '不限圈數') : '';
+  $('modeText').innerHTML = `${m}<small>${note}</small>`;
+  const ready = S.conn !== 'none';
+  $('btnStart').disabled = !ready; $('btnReset').disabled = !ready;
+}
+function renderAll() { renderMode(); renderBoard(0); renderBoard(1); }
+
+/* 本圈即時時間（只做顯示，正式成績以計時器為準） */
+function tick() {
+  for (let i = 0; i < 2; i++) {
+    const c = S.cars[i], el = $('live' + i);
+    if (!el || S.sample) continue;
+    if (c.active && c.started && !c.finished && (S.mode === 'FREE' || S.mode === 'RACE')) {
+      el.textContent = ((performance.now() - c.lastLocal) / 1000).toFixed(2);
+    }
+  }
+  requestAnimationFrame(tick);
+}
+
+/* ── 訊息處理（計時器 → 網頁）── */
+function clearSample() { if (S.sample) { S.sample = false; resetCars(); } }
+function resetCars() { S.cars = [0, 1].map(i => newCar(!!(S.cfg.cars & (1 << i)))); }
+
+function onLine(line) {
+  const p = line.trim().split(',');
+  const now = performance.now();
+  switch (p[0]) {
+    case 'HELLO': break;
+    case 'CFG':
+      S.cfg = { laps: +p[1], cross: p[2] === '1', cars: +p[3], deb: +p[4], ign: +p[5] };
+      S.cars.forEach((c, i) => c.active = !!(S.cfg.cars & (1 << i)));
+      fillSettings(); break;
+    case 'ST':
+      S.mode = p[1];
+      if (S.mode === 'COUNTDOWN') { clearSample(); resetCars(); }
+      else if (S.mode !== 'RACE') $('overlay').hidden = true;
+      break;
+    case 'RST': resetCars(); break;
+    case 'CD': showCount(p[1]); break;
+    case 'GO':
+      resetCars();
+      S.cars.forEach(c => { if (c.active) { c.started = true; c.lastLocal = now; } });
+      showCount('GO'); setTimeout(() => $('overlay').hidden = true, 700); break;
+    case 'X': {
+      const i = +p[1] - 1, lap = +p[3], c = S.cars[i];
+      if (!c) break;
+      if (lap === 0) { if (S.mode === 'FREE') { c.started = true; c.lastLocal = now; c.laps = []; c.best = 0; c.total = 0; } break; }
+      c.started = true; c.lastLocal = now;
+      addLap(i, lap, +p[4], +p[5], p[2]);
+      speak(`${CAR_NAME[i]}，${(+p[4] / 1e6).toFixed(2)}秒`);
+      break; }
+    case 'FIN': { const c = S.cars[+p[1] - 1]; if (c) { c.finished = true; c.total = +p[2]; c.place = +p[3]; speak(`${CAR_NAME[+p[1] - 1]}完賽，第${p[3]}名`); } break; }
+    case 'END': toast('比賽結束'); break;
+    case 'C': { const c = S.cars[+p[1] - 1]; if (c && !c.laps.length) { c.active = p[2] === '1'; c.started = p[3] === '1'; c.summaryLaps = +p[4]; c.best = +p[5]; c.total = +p[6]; c.finished = p[7] === '1'; c.place = +p[8]; c.lastLocal = now; } break; }
+    case 'SENS': setBeam('A', p[1] === '1'); setBeam('B', p[2] === '1'); break;
+    case 'FS': toast(`${p[1]}道偷跑（倒數中過線，不計）`); break;
+    case 'U': toast(`${p[1]}道有未預期的觸發。檢查車子是否放對車道，或按重置`); break;
+    case 'ERR': toast('計時器不認得指令：' + p[1]); break;
+  }
+  renderAll();
+}
+function setBeam(l, ok) { const el = $('beam' + l); el.className = 'beam' + (ok ? '' : ' bad'); el.textContent = `${l}道光束${ok ? '' : '被擋住'}`; }
+function showCount(n) { const o = $('overlay'), el = $('ovNum'); o.hidden = false; el.textContent = n; el.className = 'n' + (n === 'GO' ? ' go' : ''); el.style.animation = 'none'; el.offsetWidth; el.style.animation = ''; }
+
+let toastTimer;
+function toast(msg) { const t = $('toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => t.hidden = true, 3200); }
+
+function speak(text) {
+  if (!$('setVoice').checked || !('speechSynthesis' in window)) return;
+  try { const u = new SpeechSynthesisUtterance(text); u.lang = 'zh-TW'; u.rate = 1.15; speechSynthesis.cancel(); speechSynthesis.speak(u); } catch (e) {}
+}
+
+/* ── 藍芽連線 ── */
+let rxChar = null, device = null, rxBuf = '', wakeLock = null;
+const dec = new TextDecoder();
+
+async function connectBle() {
+  if (!navigator.bluetooth) { showBtNotice(); return; }
+  try {
+    device = await navigator.bluetooth.requestDevice({ filters: [{ services: [NUS] }, { namePrefix: 'Mini4WD' }], optionalServices: [NUS] });
+    device.addEventListener('gattserverdisconnected', onDisconnected);
+    $('connPill').textContent = '連線中…';
+    const server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(NUS);
+    rxChar = await svc.getCharacteristic(NUS_RX);
+    const tx = await svc.getCharacteristic(NUS_TX);
+    await tx.startNotifications();
+    tx.addEventListener('characteristicvaluechanged', e => {
+      rxBuf += dec.decode(e.target.value);
+      let k; while ((k = rxBuf.indexOf('\n')) >= 0) { const line = rxBuf.slice(0, k); rxBuf = rxBuf.slice(k + 1); if (line) onLine(line); }
+    });
+    stopDemo();
+    S.conn = 'ble'; S.sample = false; resetCars();
+    setPill(); renderAll();
+    await send('STATUS');
+    keepAwake();
+  } catch (err) {
+    setPill();
+    if (err && err.name === 'NotFoundError') return;               // 使用者取消
+    if (err && err.name === 'SecurityError') { showBtNotice(true); return; }
+    toast('連線失敗：' + (err && err.message ? err.message : err));
+  }
+}
+function onDisconnected() { rxChar = null; S.conn = 'none'; setPill(); renderAll(); toast('計時器已斷線，按「連線計時器」重新連線'); }
+async function send(cmd) {
+  if (S.conn === 'demo') { sim.command(cmd); return; }
+  if (!rxChar) { toast('尚未連線計時器'); return; }
+  try { await rxChar.writeValue(new TextEncoder().encode(cmd + '\n')); } catch (e) { toast('傳送失敗，請重新連線'); }
+}
+function setPill() {
+  const p = $('connPill');
+  p.className = 'pill' + (S.conn === 'ble' ? ' on' : S.conn === 'demo' ? ' demo' : '');
+  p.textContent = S.conn === 'ble' ? '已連線 ' + (device && device.name ? device.name : '') : S.conn === 'demo' ? '示範模式' : '未連線';
+  $('btnConnect').textContent = S.conn === 'ble' ? '中斷連線' : '連線計時器';
+  $('btnDemo').textContent = S.conn === 'demo' ? '結束示範' : '示範模式';
+}
+function showBtNotice(policy) {
+  const n = $('btNotice'); n.hidden = false;
+  n.innerHTML = policy
+    ? '<b>這個頁面環境不允許使用藍芽。</b> 請改用單機版網頁檔案（mini4wd-timer.html），用 Chrome 直接開啟，或放到 GitHub Pages 之類的 https 網址再用 Bluefy 開啟。'
+    : '<b>這個瀏覽器不支援藍芽連線。</b> 電腦與 Android 請用 Chrome 或 Edge；iPhone 請安裝 Bluefy 瀏覽器後用它開啟本頁。現在可以先按「示範模式」試用。';
+}
+async function keepAwake() { try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {} }
+
+/* ── 示範模式：模擬計時器韌體的行為 ── */
+const sim = {
+  timers: [], mode: 'FREE', cars: null, goT: 0, fin: 0,
+  emit(line) { setTimeout(() => onLine(line), 0); },
+  clear() { this.timers.forEach(clearTimeout); this.timers = []; },
+  later(ms, fn) { this.timers.push(setTimeout(fn, ms)); },
+  now() { return Math.round(performance.now() * 1000); },
+  start() {
+    this.cfg = { ...S.cfg }; this.reset(true);
+    this.emit(`CFG,${this.cfg.laps},${this.cfg.cross ? 1 : 0},${this.cfg.cars},${this.cfg.deb},${this.cfg.ign}`);
+    this.emit('SENS,1,1'); this.emit('ST,FREE');
+    this.runCars(true);
+  },
+  reset(silent) {
+    this.clear(); this.mode = 'FREE'; this.fin = 0;
+    this.cars = [0, 1].map(i => ({ active: !!(this.cfg.cars & (1 << i)), started: false, laps: 0, startT: 0, lastT: 0, lane: i, finished: false }));
+    if (!silent) { this.emit('ST,FREE'); this.emit('RST'); }
+  },
+  runCars(free) {
+    this.cars.forEach((c, i) => {
+      if (!c.active) return;
+      const base = i ? 5.55 : 5.3;
+      const go = (delay) => this.later(delay, () => {
+        this.cross(i);
+        if (this.mode !== 'FINISHED' && !c.finished) go((base + Math.random() * 0.35) * 1000);
+      });
+      go(free ? 600 + i * 900 : 250 + i * 120);
+    });
+  },
+  cross(i) {
+    const c = this.cars[i], t = this.now(), L = c.lane ? 'B' : 'A';
+    if (this.cfg.cross) c.lane = 1 - c.lane;
+    if (this.mode === 'FREE' && !c.started) { c.started = true; c.startT = c.lastT = t; this.emit(`X,${i + 1},${L},0,0,0,${t}`); return; }
+    if (this.mode === 'RACE' && !c.passedStart && c.laps === 0 && t - this.goT < this.cfg.ign * 1000) { c.passedStart = true; this.emit(`X,${i + 1},${L},0,0,${t - this.goT},${t}`); return; }
+    const lap = t - c.lastT; c.lastT = t; c.laps++;
+    this.emit(`X,${i + 1},${L},${c.laps},${lap},${t - c.startT},${t}`);
+    if (this.mode === 'RACE' && this.cfg.laps && c.laps >= this.cfg.laps) {
+      c.finished = true; this.fin++;
+      this.emit(`FIN,${i + 1},${t - c.startT},${this.fin}`);
+      if (this.cars.every(k => !k.active || k.finished)) { this.mode = 'FINISHED'; this.emit('ST,FINISHED'); this.emit('END'); this.clear(); }
+    }
+  },
+  command(cmd) {
+    const [k, v] = cmd.split(',');
+    if (k === 'START') {
+      this.reset(true); this.mode = 'COUNTDOWN'; this.emit('ST,COUNTDOWN');
+      [3, 2, 1].forEach((n, idx) => this.later(idx * 1000, () => this.emit('CD,' + n)));
+      this.later(3000, () => {
+        this.mode = 'RACE'; this.goT = this.now();
+        this.cars.forEach(c => { c.started = c.active; c.startT = c.lastT = this.goT; });
+        this.emit('ST,RACE'); this.emit('GO,' + this.goT); this.runCars(false);
+      });
+    } else if (k === 'RESET') { this.reset(); this.runCars(true); }
+    else if (k === 'STATUS') {}
+    else {
+      if (k === 'LAPS') this.cfg.laps = +v; if (k === 'CROSS') this.cfg.cross = v === '1';
+      if (k === 'CARS') this.cfg.cars = +v; if (k === 'DEB') this.cfg.deb = +v; if (k === 'IGN') this.cfg.ign = +v;
+      this.emit(`CFG,${this.cfg.laps},${this.cfg.cross ? 1 : 0},${this.cfg.cars},${this.cfg.deb},${this.cfg.ign}`);
+      if (k === 'CROSS' || k === 'CARS') { this.reset(); this.runCars(true); }
+    }
+  },
+};
+function startDemo() { S.conn = 'demo'; S.sample = false; resetCars(); setPill(); sim.start(); renderAll(); toast('示範模式：模擬兩台車在交叉軌道上跑'); }
+function stopDemo() { if (S.conn !== 'demo') return; sim.clear(); S.conn = 'none'; S.mode = 'FREE'; setPill(); renderAll(); }
+
+/* ── 設定 ── */
+function fillSettings() {
+  $('setLaps').value = S.cfg.laps; $('setCars').value = String(S.cfg.cars);
+  $('setDeb').value = S.cfg.deb; $('setIgn').value = S.cfg.ign; $('setCross').checked = S.cfg.cross;
+}
+function bindSetting(id, cmd, get) {
+  $(id).addEventListener('change', () => {
+    const v = get($(id));
+    if (S.conn === 'none') { toast('連線計時器後才能修改設定'); fillSettings(); return; }
+    send(`${cmd},${v}`);
+  });
+}
+bindSetting('setLaps', 'LAPS', e => Math.max(0, Math.min(99, parseInt(e.value) || 0)));
+bindSetting('setCars', 'CARS', e => e.value);
+bindSetting('setDeb', 'DEB', e => parseInt(e.value) || 300);
+bindSetting('setIgn', 'IGN', e => parseInt(e.value) || 0);
+bindSetting('setCross', 'CROSS', e => e.checked ? 1 : 0);
+try { $('setVoice').checked = localStorage.getItem('m4wd-voice') === '1'; } catch (e) {}
+$('setVoice').addEventListener('change', e => { try { localStorage.setItem('m4wd-voice', e.target.checked ? '1' : '0'); } catch (x) {} if (e.target.checked) speak('語音播報開啟'); });
+
+/* ── 匯出 ── */
+function buildCsv() {
+  const out = ['車號,圈,圈時(秒),累計(秒),車道'];
+  S.cars.forEach((c, i) => c.laps.forEach(l => out.push(`${i + 1},${l.n},${fmt(l.lapUs)},${fmt(l.totalUs)},${l.lane}`)));
+  S.cars.forEach((c, i) => { if (c.best) out.push(`${i + 1},最快圈,${fmt(c.best)},,`); if (c.place) out.push(`${i + 1},名次,${c.place},${fmt(c.total)},`); });
+  return out.join('\n');
+}
+$('btnExport').addEventListener('click', () => { $('csvBox').value = buildCsv(); $('exportDlg').showModal(); });
+$('btnCloseDlg').addEventListener('click', () => $('exportDlg').close());
+$('btnCopy').addEventListener('click', () => {
+  const box = $('csvBox');
+  navigator.clipboard.writeText(box.value).then(() => toast('已複製成績'), () => { box.select(); toast('請按 Ctrl+C 或長按複製'); });
+});
+
+/* ── 按鈕 ── */
+$('btnConnect').addEventListener('click', () => {
+  if (S.conn === 'ble' && device && device.gatt.connected) { device.gatt.disconnect(); return; }
+  connectBle();
+});
+$('btnDemo').addEventListener('click', () => S.conn === 'demo' ? stopDemo() : startDemo());
+$('btnStart').addEventListener('click', () => send('START'));
+$('btnReset').addEventListener('click', () => send('RESET'));
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.conn !== 'none') keepAwake(); });
+
+if (!navigator.bluetooth) showBtNotice();
+fillSettings(); setPill(); renderAll(); requestAnimationFrame(tick);
+</script>
+</body>
+</html>
