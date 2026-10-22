@@ -26,7 +26,7 @@
 #include <TM1637Display.h>
 #include "esp_timer.h"
 
-#define FW_VERSION  "1.2"
+#define FW_VERSION  "1.2.1"
 #define DEVICE_NAME "Mini4WD-Timer"
 
 // ───────── 自訂型別（要放在所有函式之前，Arduino IDE 才找得到）─────────
@@ -54,7 +54,7 @@ const int DISP_DIO[2]   = {26, 33};
 // ───────── 設定（存在 NVS，斷電保留）─────────
 struct Settings {
   uint8_t  raceLaps   = 3;     // 同時起跑的比賽圈數，0 = 不限
-  bool     crossover  = true;  // 立體交叉軌道（每圈換道）
+  bool     crossover  = false; // 立體交叉軌道（每圈換道），預設關閉
   uint8_t  carsMask   = 3;     // bit0 = 1號車（從A道出發）, bit1 = 2號車（從B道出發）
   uint16_t debounceMs = 300;   // 同一道觸發後忽略的時間（避免底盤開孔重複觸發）
   uint16_t ignoreMs   = 1500;  // 同時起跑時，GO 後這段時間內的過線視為起跑線，不算一圈
@@ -230,7 +230,7 @@ class RxCB : public BLECharacteristicCallbacks {
 void loadSettings() {
   prefs.begin("m4wd", true);
   cfg.raceLaps   = prefs.getUChar("laps", 3);
-  cfg.crossover  = prefs.getBool("cross", true);
+  cfg.crossover  = prefs.getBool("cross", false);
   cfg.carsMask   = prefs.getUChar("cars", 3);
   cfg.debounceMs = prefs.getUShort("deb", 300);
   cfg.ignoreMs   = prefs.getUShort("ign", 1500);
