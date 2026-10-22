@@ -4,7 +4,7 @@
   通訊：BLE Nordic UART Service（NUS），手機/電腦用 Web Bluetooth 網頁連線
 
   需要安裝的函式庫（Arduino IDE → 管理程式庫）：
-    - TM1637 （作者 Avinash Gupta，程式庫名稱 "TM1637"）
+    - TM1637 （作者 Avishay Orpaz，程式庫名稱 "TM1637"）
   ESP32 開發板套件：Espressif Systems "esp32"（2.x 或 3.x 皆可）
   開發板選擇：ESP32 Dev Module
 
@@ -12,6 +12,8 @@
     - 預設「過線計時」：每台車第一次過線開始計時，之後每過一次線記一圈，不限圈數。
     - 按「開始」（實體按鍵或網頁）：倒數 3-2-1 後兩台車同時起跑，計時從 GO 開始，
       跑完設定圈數即完賽並排名。完賽或按「重置」後回到過線計時。
+    - 停止：比賽中或過線計時中按「停止」（網頁，或比賽中再按一次實體開始鍵），
+      立即結束並保留成績；比賽中未完賽的車依圈數多、同圈數先過線者排名。
     - 支援立體交叉軌道：車子每圈換道，程式會自動判斷每次觸發屬於哪一台車。
 */
 
@@ -24,13 +26,18 @@
 #include <TM1637Display.h>
 #include "esp_timer.h"
 
-#define FW_VERSION  "1.0"
+#define FW_VERSION  "1.2"
 #define DEVICE_NAME "Mini4WD-Timer"
+
+// ───────── 自訂型別（要放在所有函式之前，Arduino IDE 才找得到）─────────
+struct BeamEvent { uint8_t lane; int64_t t; };
+struct Button { int pin; bool last; uint32_t changedAt; bool stable; };
 
 // ───────── 腳位設定 ─────────
 const int PIN_SENSOR[2] = {18, 19};   // 感測器白(黃)線：A道、B道
 const int PIN_BTN_START = 27;         // 開始按鍵 OUT（VCC 不接）
 const int PIN_BTN_RESET = 13;         // 重置按鍵 OUT（VCC 不接）
+const int PIN_BTN_TEST  = 0;          // 板上 BOOT 鍵：按一下模擬 A道過線（沒接感測器也能測試）
 const int PIN_LED       = 2;          // 板上藍燈：任一道光束被遮斷時亮（對位用）
 const int PIN_BUZZER    = -1;         // 有源蜂鳴器接 23 就把 -1 改成 23
 const int DISP_CLK[2]   = {25, 32};   // 1號車顯示器、2號車顯示器
@@ -89,7 +96,6 @@ int  qPop(int l) {
 }
 
 // ───────── 中斷：只記錄時間戳 ─────────
-struct BeamEvent { uint8_t lane; int64_t t; };
 #define EVQ 32
 volatile BeamEvent evBuf[EVQ];
 volatile uint8_t evHead = 0, evTail = 0;
@@ -365,6 +371,31 @@ void updateCountdown() {
   }
 }
 
+// 停止計時並保留成績
+void stopTiming() {
+  if (state == ST_FINISHED) return;
+  if (state == ST_COUNTDOWN) { resetAll(); return; }          // 倒數中停止 = 取消
+  if (state == ST_RACE) {
+    // 未完賽的車：圈數多的在前；同圈數時先過線（累計時間短）的在前
+    int order[2], n = 0;
+    for (int i = 0; i < 2; i++) if (cars[i].active && !cars[i].finished) order[n++] = i;
+    if (n == 2) {
+      Car &a = cars[order[0]], &b = cars[order[1]];
+      bool swap = b.laps > a.laps || (b.laps == a.laps && b.laps > 0 && b.total < a.total);
+      if (swap) { int t = order[0]; order[0] = order[1]; order[1] = t; }
+    }
+    for (int k = 0; k < n; k++) {
+      Car& c = cars[order[k]];
+      c.place = ++finishCount;
+      sendf("RANK,%d,%u,%u,%lld", order[k] + 1, c.place, c.laps, (long long)c.total);
+      if (c.laps) showTime(order[k], c.total); else showDash(order[k]);
+    }
+  }
+  setState(ST_FINISHED);
+  sendLine("STOP");
+  beep(400);
+}
+
 // ───────── 指令處理 ─────────
 void sendStatus() {
   sendf("HELLO,%s", FW_VERSION);
@@ -384,19 +415,21 @@ void handleCommand(char* cmd) {
 
   if      (!strcmp(cmd, "START"))  startCountdown();
   else if (!strcmp(cmd, "RESET"))  resetAll();
+  else if (!strcmp(cmd, "STOP"))   stopTiming();
   else if (!strcmp(cmd, "STATUS")) sendStatus();
   else if (!strcmp(cmd, "LAPS"))   { cfg.raceLaps = constrain(v, 0, 99); saveSettings(); sendConfig(); }
   else if (!strcmp(cmd, "CROSS"))  { cfg.crossover = v != 0; saveSettings(); sendConfig(); resetAll(); }
   else if (!strcmp(cmd, "CARS"))   { cfg.carsMask = constrain(v, 1, 3); saveSettings(); sendConfig(); resetAll(); }
   else if (!strcmp(cmd, "DEB"))    { cfg.debounceMs = constrain(v, 50, 3000); saveSettings(); sendConfig(); }
+  else if (!strcmp(cmd, "SIM"))    handleCrossing(arg && (arg[0] == 'B' || arg[0] == 'b') ? 1 : 0, esp_timer_get_time());
   else if (!strcmp(cmd, "IGN"))    { cfg.ignoreMs = constrain(v, 0, 10000); saveSettings(); sendConfig(); }
   else sendf("ERR,%s", cmd);
 }
 
 // ───────── 按鍵 ─────────
-struct Button { int pin; bool last; uint32_t changedAt; bool stable; };
 Button btnStart = {PIN_BTN_START, HIGH, 0, HIGH};
 Button btnReset = {PIN_BTN_RESET, HIGH, 0, HIGH};
+Button btnTest  = {PIN_BTN_TEST,  HIGH, 0, HIGH};
 
 bool pressed(Button& b) {           // 按下瞬間回傳 true（含 30ms 去彈跳）
   bool r = digitalRead(b.pin);
@@ -406,6 +439,25 @@ bool pressed(Button& b) {           // 按下瞬間回傳 true（含 30ms 去彈
     if (r == LOW) return true;
   }
   return false;
+}
+
+// ───────── 序列埠指令（測試用）─────────
+// 在「序列埠監控窗」輸入：A 或 B = 模擬該道過線；START、RESET、STATUS 等指令也可以用
+char serBuf[CMD_LEN];
+uint8_t serLen = 0;
+void pollSerial() {
+  while (Serial.available()) {
+    char ch = Serial.read();
+    if (ch == '\r') continue;
+    if (ch != '\n' && serLen < CMD_LEN - 1) { serBuf[serLen++] = ch; continue; }
+    serBuf[serLen] = 0;
+    if (serLen) {
+      for (uint8_t i = 0; i < serLen; i++) serBuf[i] = toupper(serBuf[i]);
+      if (!strcmp(serBuf, "A") || !strcmp(serBuf, "B")) handleCrossing(serBuf[0] == 'B' ? 1 : 0, esp_timer_get_time());
+      else handleCommand(serBuf);
+    }
+    serLen = 0;
+  }
 }
 
 // ───────── 光束狀態（對位用）─────────
@@ -437,6 +489,7 @@ void setup() {
   if (PIN_BUZZER >= 0) { pinMode(PIN_BUZZER, OUTPUT); digitalWrite(PIN_BUZZER, LOW); }
   pinMode(PIN_BTN_START, INPUT_PULLUP);
   pinMode(PIN_BTN_RESET, INPUT_PULLUP);
+  pinMode(PIN_BTN_TEST, INPUT_PULLUP);
   for (int l = 0; l < 2; l++) pinMode(PIN_SENSOR[l], INPUT_PULLUP);
 
   loadSettings();
@@ -478,8 +531,12 @@ void loop() {
   char cmd[CMD_LEN];
   while (xQueueReceive(cmdQueue, cmd, 0) == pdTRUE) handleCommand(cmd);
 
-  if (pressed(btnStart)) startCountdown();
+  if (pressed(btnStart)) {                     // 比賽或倒數中再按一次 = 停止
+    if (state == ST_RACE || state == ST_COUNTDOWN) stopTiming(); else startCountdown();
+  }
   if (pressed(btnReset)) resetAll();
+  if (pressed(btnTest)) handleCrossing(0, esp_timer_get_time());   // BOOT 鍵 = 模擬 A道過線
+  pollSerial();
 
   pollBeams();
 

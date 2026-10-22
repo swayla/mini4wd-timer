@@ -154,7 +154,9 @@ dialog textarea { width: 100%; height: 220px; font-family: ui-monospace, Menlo, 
       <div class="field"><label for="setDeb">防重複觸發（毫秒）</label><input id="setDeb" type="number" min="50" max="3000" step="50" value="300"><small>同一道觸發後忽略的時間</small></div>
       <div class="field"><label for="setIgn">起跑線忽略（毫秒）</label><input id="setIgn" type="number" min="0" max="10000" step="100" value="1500"><small>GO 後這段時間內過線不算一圈</small></div>
       <label class="check"><input id="setCross" type="checkbox" checked> 立體交叉軌道（每圈換道）</label>
-      <label class="check"><input id="setCdVoice" type="checkbox" checked> 英文倒數語音（Three、Two、One、Go）</label>
+      <div class="field"><label for="setCdSound">倒數音效</label>
+        <select id="setCdSound"><option value="both">英文語音＋賽車起跑嗶聲</option><option value="voice">只有英文語音</option><option value="beep">只有賽車起跑嗶聲</option><option value="off">關閉</option></select>
+        <button id="btnPreview" type="button">試聽倒數</button></div>
       <label class="check"><input id="setVoice" type="checkbox"> 語音播報圈時</label>
     </div>
   </details>
@@ -278,11 +280,11 @@ function onLine(line) {
       else if (S.mode !== 'RACE') $('overlay').hidden = true;
       break;
     case 'RST': resetCars(); break;
-    case 'CD': showCount(p[1]); speakCount(['', 'One', 'Two', 'Three'][+p[1]] || p[1]); break;
+    case 'CD': showCount(p[1]); countCue(+p[1]); break;
     case 'GO':
       resetCars();
       S.cars.forEach(c => { if (c.active) { c.started = true; c.lastLocal = now; } });
-      showCount('GO'); speakCount('Go!'); setTimeout(() => $('overlay').hidden = true, 700); break;
+      showCount('GO'); countCue(0); setTimeout(() => $('overlay').hidden = true, 700); break;
     case 'X': {
       const i = +p[1] - 1, lap = +p[3], c = S.cars[i];
       if (!c) break;
@@ -314,24 +316,57 @@ function speak(text) {
   try { const u = new SpeechSynthesisUtterance(text); u.lang = 'zh-TW'; u.rate = 1.15; speechSynthesis.cancel(); speechSynthesis.speak(u); } catch (e) {}
 }
 
-/* 英文倒數語音 */
+/* 倒數音效：英文語音＋賽車起跑嗶聲 */
 let enVoice = null;
+const VOICE_PREF = ['Samantha', 'Google US English', 'Microsoft Aria', 'Microsoft Jenny', 'Microsoft Guy', 'Alex', 'Daniel'];
 function pickEnVoice() {
-  try { const vs = speechSynthesis.getVoices(); enVoice = vs.find(v => /^en[-_]US/i.test(v.lang)) || vs.find(v => /^en/i.test(v.lang)) || null; } catch (e) {}
+  try {
+    const vs = speechSynthesis.getVoices().filter(v => /^en/i.test(v.lang));
+    enVoice = VOICE_PREF.map(n => vs.find(v => v.name.includes(n))).find(Boolean) || vs.find(v => /^en[-_]US/i.test(v.lang)) || vs[0] || null;
+  } catch (e) {}
 }
 if ('speechSynthesis' in window) { pickEnVoice(); try { speechSynthesis.addEventListener('voiceschanged', pickEnVoice); } catch (e) {} }
-function speakCount(text) {
-  if (!$('setCdVoice').checked || !('speechSynthesis' in window)) return;
+function cdMode() { return $('setCdSound').value; }
+function sayEn(text, pitch, rate) {
+  if (!('speechSynthesis' in window)) return;
   try {
     const u = new SpeechSynthesisUtterance(text);
     u.lang = 'en-US'; if (enVoice) u.voice = enVoice;
-    u.rate = 1.1; u.volume = 1;
+    u.pitch = pitch; u.rate = rate; u.volume = 1;
     speechSynthesis.cancel(); speechSynthesis.speak(u);
   } catch (e) {}
 }
+let actx = null;
+function tone(freq, dur, vol = 0.28) {
+  if (!actx) return;
+  try {
+    const t0 = actx.currentTime + 0.01, o = actx.createOscillator(), g = actx.createGain();
+    o.type = 'square'; o.frequency.value = freq;
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(vol, t0 + 0.01);
+    g.gain.setValueAtTime(vol, t0 + dur - 0.05);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    o.connect(g).connect(actx.destination); o.start(t0); o.stop(t0 + dur + 0.02);
+  } catch (e) {}
+}
+// n = 3, 2, 1 倒數；0 = GO
+function countCue(n) {
+  const m = cdMode(); if (m === 'off') return;
+  if (m !== 'voice') n ? tone(880, 0.22) : tone(1760, 0.75, 0.32);
+  if (m !== 'beep') {
+    if (n) setTimeout(() => sayEn(['', 'One!', 'Two!', 'Three!'][n], 1.3, 1.05), m === 'both' ? 120 : 0);
+    else setTimeout(() => sayEn('Go! Go! Go!', 1.6, 1.15), m === 'both' ? 150 : 0);
+  }
+}
+function previewCountdown() { unlockSpeech(); [3, 2, 1, 0].forEach((n, i) => setTimeout(() => countCue(n), i * 1000)); }
+
 // iPhone 要先在按鈕點擊時「解鎖」語音，之後收到計時器訊號才能出聲
 let speechUnlocked = false;
 function unlockSpeech() {
+  try {
+    if (!actx) { const AC = window.AudioContext || window.webkitAudioContext; if (AC) actx = new AC(); }
+    if (actx && actx.state === 'suspended') actx.resume();
+  } catch (e) {}
   if (speechUnlocked || !('speechSynthesis' in window)) return;
   try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); speechUnlocked = true; } catch (e) {}
 }
@@ -483,8 +518,9 @@ bindSetting('setDeb', 'DEB', e => parseInt(e.value) || 300);
 bindSetting('setIgn', 'IGN', e => parseInt(e.value) || 0);
 bindSetting('setCross', 'CROSS', e => e.checked ? 1 : 0);
 try { $('setVoice').checked = localStorage.getItem('m4wd-voice') === '1'; } catch (e) {}
-try { $('setCdVoice').checked = localStorage.getItem('m4wd-cdvoice') !== '0'; } catch (e) {}
-$('setCdVoice').addEventListener('change', e => { try { localStorage.setItem('m4wd-cdvoice', e.target.checked ? '1' : '0'); } catch (x) {} if (e.target.checked) speakCount('Ready'); });
+try { const v = localStorage.getItem('m4wd-cdsound'); if (v) $('setCdSound').value = v; } catch (e) {}
+$('setCdSound').addEventListener('change', e => { try { localStorage.setItem('m4wd-cdsound', e.target.value); } catch (x) {} });
+$('btnPreview').addEventListener('click', previewCountdown);
 $('setVoice').addEventListener('change', e => { try { localStorage.setItem('m4wd-voice', e.target.checked ? '1' : '0'); } catch (x) {} if (e.target.checked) speak('語音播報開啟'); });
 
 /* ── 匯出 ── */
