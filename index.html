@@ -155,8 +155,9 @@ dialog textarea { width: 100%; height: 220px; font-family: ui-monospace, Menlo, 
       <div class="field"><label for="setIgn">起跑線忽略（毫秒）</label><input id="setIgn" type="number" min="0" max="10000" step="100" value="1500"><small>GO 後這段時間內過線不算一圈</small></div>
       <label class="check"><input id="setCross" type="checkbox"> 立體交叉軌道（每圈換道）</label>
       <div class="field"><label for="setCdSound">倒數音效</label>
-        <select id="setCdSound"><option value="both">英文語音＋賽車起跑嗶聲</option><option value="voice">只有英文語音</option><option value="beep">只有賽車起跑嗶聲</option><option value="off">關閉</option></select>
-        <button id="btnPreview" type="button">試聽倒數</button></div>
+        <select id="setCdSound"><option value="rec">自己的錄音（countdown.mp3）</option><option value="recbeep">自己的錄音＋賽車起跑嗶聲</option><option value="both">英文語音＋賽車起跑嗶聲</option><option value="voice">只有英文語音</option><option value="beep">只有賽車起跑嗶聲</option><option value="off">關閉</option></select>
+        <button id="btnPreview" type="button">試聽倒數</button>
+        <small id="recNote">找不到錄音檔時，自動改用英文語音＋嗶聲</small></div>
       <label class="check"><input id="setVoice" type="checkbox"> 語音播報圈時</label>
     </div>
   </details>
@@ -279,7 +280,7 @@ function onLine(line) {
       if (S.mode === 'COUNTDOWN') { clearSample(); resetCars(); }
       else if (S.mode !== 'RACE') $('overlay').hidden = true;
       break;
-    case 'RST': resetCars(); break;
+    case 'RST': resetCars(); stopRec(); break;
     case 'CD': showCount(p[1]); countCue(+p[1]); break;
     case 'GO':
       resetCars();
@@ -349,9 +350,37 @@ function tone(freqs, dur, vol = 0.2) {
     [].concat(freqs).forEach(f => { const o = actx.createOscillator(); o.type = 'square'; o.frequency.value = f; o.connect(g); o.start(t0); o.stop(t0 + dur + 0.02); });
   } catch (e) {}
 }
+/* 自己的錄音：和網頁放在同一個資料夾的 countdown.mp3（或 .m4a），倒數一開始（顯示 3）就整段播放 */
+let recBuf = null, recState = 'none', recSrc = null;   // none | loading | ok | missing
+function loadRec() {
+  if (!actx || recState !== 'none') return;
+  recState = 'loading';
+  const get = f => fetch(f, { cache: 'no-cache' }).then(r => { if (!r.ok) throw 0; return r.arrayBuffer(); })
+    .then(b => new Promise((ok, ng) => { const pr = actx.decodeAudioData(b, ok, ng); if (pr && pr.catch) pr.catch(() => {}); }));
+  get('countdown.mp3').catch(() => get('countdown.m4a'))
+    .then(buf => { recBuf = buf; recState = 'ok'; $('recNote').textContent = '已載入自己的錄音'; })
+    .catch(() => { recState = 'missing'; $('recNote').textContent = '找不到 countdown.mp3，目前改用英文語音＋嗶聲'; });
+}
+function playRec() {
+  if (!recBuf) return false;
+  try { if (recSrc) recSrc.stop(); } catch (e) {}
+  const g = actx.createGain(); g.gain.value = 1;
+  recSrc = actx.createBufferSource(); recSrc.buffer = recBuf; recSrc.connect(g).connect(actx.destination); recSrc.start();
+  return true;
+}
+function stopRec() { try { if (recSrc) recSrc.stop(); } catch (e) {} recSrc = null; }
+
 // n = 3, 2, 1 倒數；0 = GO
 function countCue(n) {
-  const m = cdMode(); if (m === 'off') return;
+  let m = cdMode(); if (m === 'off') return;
+  if (m === 'rec' || m === 'recbeep') {
+    if (recState === 'ok') {
+      if (n === 3) playRec();
+      if (m === 'recbeep') n ? tone(880, 0.2, 0.14) : tone([1760, 880, 1320], 1.0, 0.45);
+      return;
+    }
+    m = 'both';                                   // 沒有錄音檔就退回電子語音
+  }
   // 3-2-1 刻意小聲一點，GO 用最大音量並加厚嗶聲，聽起來更有爆發力
   if (m !== 'voice') n ? tone(880, 0.2, 0.14) : tone([1760, 880, 1320], 1.0, 0.6);
   if (m !== 'beep') {
@@ -359,7 +388,11 @@ function countCue(n) {
     else setTimeout(() => sayEn('GO! GO! GO!', 1.7, 1.2, 1), m === 'both' ? 120 : 0);
   }
 }
-function previewCountdown() { unlockSpeech(); [3, 2, 1, 0].forEach((n, i) => setTimeout(() => countCue(n), i * 1000)); }
+function previewCountdown() {
+  unlockSpeech();
+  const go = () => [3, 2, 1, 0].forEach((n, i) => setTimeout(() => countCue(n), i * 1000));
+  if (recState === 'loading') setTimeout(go, 600); else go();
+}
 
 // iPhone 要先在按鈕點擊時「解鎖」語音，之後收到計時器訊號才能出聲
 let speechUnlocked = false;
@@ -367,6 +400,7 @@ function unlockSpeech() {
   try {
     if (!actx) { const AC = window.AudioContext || window.webkitAudioContext; if (AC) actx = new AC(); }
     if (actx && actx.state === 'suspended') actx.resume();
+    loadRec();
   } catch (e) {}
   if (speechUnlocked || !('speechSynthesis' in window)) return;
   try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); speechUnlocked = true; } catch (e) {}
@@ -519,6 +553,7 @@ bindSetting('setDeb', 'DEB', e => parseInt(e.value) || 300);
 bindSetting('setIgn', 'IGN', e => parseInt(e.value) || 0);
 bindSetting('setCross', 'CROSS', e => e.checked ? 1 : 0);
 try { $('setVoice').checked = localStorage.getItem('m4wd-voice') === '1'; } catch (e) {}
+$('setCdSound').value = 'rec';
 try { const v = localStorage.getItem('m4wd-cdsound'); if (v) $('setCdSound').value = v; } catch (e) {}
 $('setCdSound').addEventListener('change', e => { try { localStorage.setItem('m4wd-cdsound', e.target.value); } catch (x) {} });
 $('btnPreview').addEventListener('click', previewCountdown);
