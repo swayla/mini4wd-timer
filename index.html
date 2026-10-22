@@ -138,6 +138,7 @@ dialog textarea { width: 100%; height: 220px; font-family: ui-monospace, Menlo, 
 
   <div class="controls">
     <button id="btnStart" class="primary" type="button">開始比賽（倒數同時起跑）</button>
+    <button id="btnStop" type="button">停止（保留成績）</button>
     <button id="btnReset" type="button">重置</button>
     <span class="grow"></span>
     <button id="btnExport" type="button">匯出成績</button>
@@ -153,6 +154,7 @@ dialog textarea { width: 100%; height: 220px; font-family: ui-monospace, Menlo, 
       <div class="field"><label for="setDeb">防重複觸發（毫秒）</label><input id="setDeb" type="number" min="50" max="3000" step="50" value="300"><small>同一道觸發後忽略的時間</small></div>
       <div class="field"><label for="setIgn">起跑線忽略（毫秒）</label><input id="setIgn" type="number" min="0" max="10000" step="100" value="1500"><small>GO 後這段時間內過線不算一圈</small></div>
       <label class="check"><input id="setCross" type="checkbox" checked> 立體交叉軌道（每圈換道）</label>
+      <label class="check"><input id="setCdVoice" type="checkbox" checked> 英文倒數語音（Three、Two、One、Go）</label>
       <label class="check"><input id="setVoice" type="checkbox"> 語音播報圈時</label>
     </div>
   </details>
@@ -219,7 +221,7 @@ function renderBoard(i) {
     <div class="bhead"><span class="bname">${CAR_NAME[i]}</span>
       ${c.place ? `<span class="place">第 ${c.place} 名</span>` : `<span class="bsub">${c.active ? startLane + '道出發' : '未參賽'}</span>`}</div>
     <div class="big"><div class="lbl" id="lbl${i}">${liveLabel(c)}</div>
-      <div class="time live"><span id="live${i}">${c.finished ? fmt(c.total) : (last ? fmt(last) : '0.000')}</span><span class="u">秒</span></div></div>
+      <div class="time live"><span id="live${i}">${(c.finished || c.stoppedRank) ? fmt(c.total) : (last ? fmt(last) : '0.000')}</span><span class="u">秒</span></div></div>
     <div class="stats">
       <div><span>圈數</span><b>${lapCount}${target}</b></div>
       <div><span>最快圈</span><b class="best">${c.best ? fmt(c.best) : '—'}</b></div>
@@ -229,16 +231,18 @@ function renderBoard(i) {
       : `<div class="empty">${c.active ? (c.started ? '計時中，等待過線…' : '車子第一次過線後開始計時') : '設定裡把這台車加入即可計時'}</div>`}</div>`;
 }
 function liveLabel(c) {
+  if (c.stoppedRank) return '停止時總時間';
   if (c.finished) return '完賽總時間';
   if (c.started && !c.finished && S.mode !== 'FINISHED' && !S.sample) return '本圈進行中';
   return '上一圈';
 }
 function renderMode() {
-  const m = { FREE: '過線計時', COUNTDOWN: '倒數中', RACE: '比賽中', FINISHED: '完賽' }[S.mode] || S.mode;
-  const note = S.sample ? '示範資料' : S.mode === 'FREE' ? '每台車第一次過線開始計時' : S.mode === 'RACE' ? (S.cfg.laps ? `目標 ${S.cfg.laps} 圈` : '不限圈數') : '';
+  const m = { FREE: '過線計時', COUNTDOWN: '倒數中', RACE: '比賽中', FINISHED: S.stopped ? '已停止' : '完賽' }[S.mode] || S.mode;
+  const note = S.sample ? '示範資料' : S.mode === 'FINISHED' ? '成績保留中，按「開始比賽」或「重置」繼續' : S.mode === 'FREE' ? '每台車第一次過線開始計時' : S.mode === 'RACE' ? (S.cfg.laps ? `目標 ${S.cfg.laps} 圈` : '不限圈數') : '';
   $('modeText').innerHTML = `${m}<small>${note}</small>`;
   const ready = S.conn !== 'none';
   $('btnStart').disabled = !ready; $('btnReset').disabled = !ready;
+  $('btnStop').disabled = !ready || S.mode === 'FINISHED';
 }
 function renderAll() { renderMode(); renderBoard(0); renderBoard(1); }
 
@@ -269,15 +273,16 @@ function onLine(line) {
       fillSettings(); break;
     case 'ST':
       S.mode = p[1];
+      if (S.mode !== 'FINISHED') S.stopped = false;
       if (S.mode === 'COUNTDOWN') { clearSample(); resetCars(); }
       else if (S.mode !== 'RACE') $('overlay').hidden = true;
       break;
     case 'RST': resetCars(); break;
-    case 'CD': showCount(p[1]); break;
+    case 'CD': showCount(p[1]); speakCount(['', 'One', 'Two', 'Three'][+p[1]] || p[1]); break;
     case 'GO':
       resetCars();
       S.cars.forEach(c => { if (c.active) { c.started = true; c.lastLocal = now; } });
-      showCount('GO'); setTimeout(() => $('overlay').hidden = true, 700); break;
+      showCount('GO'); speakCount('Go!'); setTimeout(() => $('overlay').hidden = true, 700); break;
     case 'X': {
       const i = +p[1] - 1, lap = +p[3], c = S.cars[i];
       if (!c) break;
@@ -288,6 +293,8 @@ function onLine(line) {
       break; }
     case 'FIN': { const c = S.cars[+p[1] - 1]; if (c) { c.finished = true; c.total = +p[2]; c.place = +p[3]; speak(`${CAR_NAME[+p[1] - 1]}完賽，第${p[3]}名`); } break; }
     case 'END': toast('比賽結束'); break;
+    case 'RANK': { const c = S.cars[+p[1] - 1]; if (c) { c.place = +p[2]; c.stoppedRank = true; if (+p[4]) c.total = +p[4]; } break; }
+    case 'STOP': S.stopped = true; toast('已停止，成績保留到按「重置」或「開始比賽」'); speak('停止'); break;
     case 'C': { const c = S.cars[+p[1] - 1]; if (c && !c.laps.length) { c.active = p[2] === '1'; c.started = p[3] === '1'; c.summaryLaps = +p[4]; c.best = +p[5]; c.total = +p[6]; c.finished = p[7] === '1'; c.place = +p[8]; c.lastLocal = now; } break; }
     case 'SENS': setBeam('A', p[1] === '1'); setBeam('B', p[2] === '1'); break;
     case 'FS': toast(`${p[1]}道偷跑（倒數中過線，不計）`); break;
@@ -306,6 +313,29 @@ function speak(text) {
   if (!$('setVoice').checked || !('speechSynthesis' in window)) return;
   try { const u = new SpeechSynthesisUtterance(text); u.lang = 'zh-TW'; u.rate = 1.15; speechSynthesis.cancel(); speechSynthesis.speak(u); } catch (e) {}
 }
+
+/* 英文倒數語音 */
+let enVoice = null;
+function pickEnVoice() {
+  try { const vs = speechSynthesis.getVoices(); enVoice = vs.find(v => /^en[-_]US/i.test(v.lang)) || vs.find(v => /^en/i.test(v.lang)) || null; } catch (e) {}
+}
+if ('speechSynthesis' in window) { pickEnVoice(); try { speechSynthesis.addEventListener('voiceschanged', pickEnVoice); } catch (e) {} }
+function speakCount(text) {
+  if (!$('setCdVoice').checked || !('speechSynthesis' in window)) return;
+  try {
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'en-US'; if (enVoice) u.voice = enVoice;
+    u.rate = 1.1; u.volume = 1;
+    speechSynthesis.cancel(); speechSynthesis.speak(u);
+  } catch (e) {}
+}
+// iPhone 要先在按鈕點擊時「解鎖」語音，之後收到計時器訊號才能出聲
+let speechUnlocked = false;
+function unlockSpeech() {
+  if (speechUnlocked || !('speechSynthesis' in window)) return;
+  try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); speechUnlocked = true; } catch (e) {}
+}
+document.addEventListener('pointerdown', unlockSpeech, { once: true });
 
 /* ── 藍芽連線 ── */
 let rxChar = null, device = null, rxBuf = '', wakeLock = null;
@@ -412,6 +442,17 @@ const sim = {
         this.emit('ST,RACE'); this.emit('GO,' + this.goT); this.runCars(false);
       });
     } else if (k === 'RESET') { this.reset(); this.runCars(true); }
+    else if (k === 'STOP') {
+      if (this.mode === 'FINISHED') return;
+      if (this.mode === 'COUNTDOWN') { this.reset(); this.runCars(true); return; }
+      this.clear();
+      if (this.mode === 'RACE') {
+        this.cars.map((c, i) => ({ c, i })).filter(o => o.c.active && !o.c.finished)
+          .sort((a, b) => b.c.laps - a.c.laps || (a.c.lastT - a.c.startT) - (b.c.lastT - b.c.startT))
+          .forEach(o => { this.fin++; this.emit(`RANK,${o.i + 1},${this.fin},${o.c.laps},${o.c.laps ? o.c.lastT - o.c.startT : 0}`); });
+      }
+      this.mode = 'FINISHED'; this.emit('ST,FINISHED'); this.emit('STOP');
+    }
     else if (k === 'STATUS') {}
     else {
       if (k === 'LAPS') this.cfg.laps = +v; if (k === 'CROSS') this.cfg.cross = v === '1';
@@ -442,6 +483,8 @@ bindSetting('setDeb', 'DEB', e => parseInt(e.value) || 300);
 bindSetting('setIgn', 'IGN', e => parseInt(e.value) || 0);
 bindSetting('setCross', 'CROSS', e => e.checked ? 1 : 0);
 try { $('setVoice').checked = localStorage.getItem('m4wd-voice') === '1'; } catch (e) {}
+try { $('setCdVoice').checked = localStorage.getItem('m4wd-cdvoice') !== '0'; } catch (e) {}
+$('setCdVoice').addEventListener('change', e => { try { localStorage.setItem('m4wd-cdvoice', e.target.checked ? '1' : '0'); } catch (x) {} if (e.target.checked) speakCount('Ready'); });
 $('setVoice').addEventListener('change', e => { try { localStorage.setItem('m4wd-voice', e.target.checked ? '1' : '0'); } catch (x) {} if (e.target.checked) speak('語音播報開啟'); });
 
 /* ── 匯出 ── */
@@ -464,8 +507,9 @@ $('btnConnect').addEventListener('click', () => {
   connectBle();
 });
 $('btnDemo').addEventListener('click', () => S.conn === 'demo' ? stopDemo() : startDemo());
-$('btnStart').addEventListener('click', () => send('START'));
+$('btnStart').addEventListener('click', () => { unlockSpeech(); send('START'); });
 $('btnReset').addEventListener('click', () => send('RESET'));
+$('btnStop').addEventListener('click', () => send('STOP'));
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.conn !== 'none') keepAwake(); });
 
 if (!navigator.bluetooth) showBtNotice();
