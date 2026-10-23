@@ -98,6 +98,8 @@ summary { padding: 11px 14px; cursor: pointer; font-weight: 700; }
 .field label { font-size: 13px; font-weight: 500; }
 .field small { font-size: 12px; color: var(--muted); }
 input[type=number], select { font: inherit; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); width: 100%; }
+.frow { display: flex; gap: 8px; flex-wrap: wrap; }
+input[type=file] { font: inherit; font-size: 13px; max-width: 100%; }
 .check { display: flex; gap: 8px; align-items: center; font-size: 14px; }
 .check input { width: 18px; height: 18px; }
 
@@ -158,6 +160,11 @@ dialog textarea { width: 100%; height: 220px; font-family: ui-monospace, Menlo, 
         <select id="setCdSound"><option value="rec">自己的錄音（countdown.mp3）</option><option value="recbeep">自己的錄音＋賽車起跑嗶聲</option><option value="both">英文語音＋賽車起跑嗶聲</option><option value="voice">只有英文語音</option><option value="beep">只有賽車起跑嗶聲</option><option value="off">關閉</option></select>
         <button id="btnPreview" type="button">試聽倒數</button>
         <small id="recNote">找不到錄音檔時，自動改用英文語音＋嗶聲</small></div>
+      <div class="field"><label for="setFinWhen">完賽音樂</label>
+        <select id="setFinWhen"><option value="first">第一台車完賽時播放</option><option value="each">每台車完賽時都播放</option><option value="off">不播放</option></select>
+        <input id="setFinFile" type="file" accept=".mp3,.m4a,.aac,.wav">
+        <div class="frow"><button id="btnFinPreview" type="button">試聽</button><button id="btnFinStop" type="button">停止音樂</button><button id="btnFinClear" type="button">移除</button></div>
+        <small id="finNote">從手機選一首音樂，只存在這支手機裡，不會上傳</small></div>
       <label class="check"><input id="setVoice" type="checkbox"> 語音播報圈時</label>
     </div>
   </details>
@@ -277,10 +284,10 @@ function onLine(line) {
     case 'ST':
       S.mode = p[1];
       if (S.mode !== 'FINISHED') S.stopped = false;
-      if (S.mode === 'COUNTDOWN') { clearSample(); resetCars(); }
+      if (S.mode === 'COUNTDOWN') { clearSample(); resetCars(); stopFin(); }
       else if (S.mode !== 'RACE') $('overlay').hidden = true;
       break;
-    case 'RST': resetCars(); stopRec(); break;
+    case 'RST': resetCars(); stopRec(); stopFin(); break;
     case 'CD': showCount(p[1]); countCue(+p[1]); break;
     case 'GO':
       resetCars();
@@ -294,7 +301,7 @@ function onLine(line) {
       addLap(i, lap, +p[4], +p[5], p[2]);
       speak(`${CAR_NAME[i]}，${(+p[4] / 1e6).toFixed(2)}秒`);
       break; }
-    case 'FIN': { const c = S.cars[+p[1] - 1]; if (c) { c.finished = true; c.total = +p[2]; c.place = +p[3]; speak(`${CAR_NAME[+p[1] - 1]}完賽，第${p[3]}名`); } break; }
+    case 'FIN': { const c = S.cars[+p[1] - 1]; if (c) { c.finished = true; c.total = +p[2]; c.place = +p[3]; finishCue(+p[3]); speak(`${CAR_NAME[+p[1] - 1]}完賽，第${p[3]}名`); } break; }
     case 'END': toast('比賽結束'); break;
     case 'RANK': { const c = S.cars[+p[1] - 1]; if (c) { c.place = +p[2]; c.stoppedRank = true; if (+p[4]) c.total = +p[4]; } break; }
     case 'STOP': S.stopped = true; toast('已停止，成績保留到按「重置」或「開始比賽」'); speak('停止'); break;
@@ -370,6 +377,48 @@ function playRec() {
 }
 function stopRec() { try { if (recSrc) recSrc.stop(); } catch (e) {} recSrc = null; }
 
+/* 完賽音樂：手機裡選的檔案存在瀏覽器（IndexedDB）；沒有選的話，試著讀網頁旁的 finish.mp3 */
+let finBuf = null, finSrc = null, finName = '', finRaw = null, finTried = false;
+function idb() {
+  return new Promise((ok, ng) => {
+    try { const r = indexedDB.open('m4wd', 1); r.onupgradeneeded = () => r.result.createObjectStore('files'); r.onsuccess = () => ok(r.result); r.onerror = () => ng(r.error); }
+    catch (e) { ng(e); }
+  });
+}
+function idbPut(key, val) { return idb().then(db => new Promise((ok, ng) => { const t = db.transaction('files', 'readwrite'); val == null ? t.objectStore('files').delete(key) : t.objectStore('files').put(val, key); t.oncomplete = ok; t.onerror = () => ng(t.error); })); }
+function idbGet(key) { return idb().then(db => new Promise((ok, ng) => { const q = db.transaction('files').objectStore('files').get(key); q.onsuccess = () => ok(q.result); q.onerror = () => ng(q.error); })); }
+function finNote(t) { $('finNote').textContent = t; }
+function decodeFin() {
+  if (!actx || !finRaw || finBuf) return Promise.resolve(finBuf);
+  return new Promise((ok, ng) => { const pr = actx.decodeAudioData(finRaw.slice(0), ok, ng); if (pr && pr.catch) pr.catch(() => {}); })
+    .then(b => { finBuf = b; finNote(`已設定：${finName}（${Math.round(b.duration)} 秒）`); return b; })
+    .catch(() => { finNote('這個檔案無法播放，請改選 MP3 或 M4A'); return null; });
+}
+function loadFin() {
+  if (finTried) return; finTried = true;
+  idbGet('finish').then(v => {
+    if (v && v.data) { finRaw = v.data; finName = v.name; finNote(`已設定：${finName}`); decodeFin(); return; }
+    return fetch('finish.mp3', { cache: 'no-cache' }).then(r => { if (!r.ok) throw 0; return r.arrayBuffer(); })
+      .then(b => { finRaw = b; finName = 'finish.mp3'; finNote('使用網頁資料夾裡的 finish.mp3'); decodeFin(); });
+  }).catch(() => {});
+}
+function playFin() {
+  return decodeFin().then(b => {
+    if (!b) return;
+    stopFin();
+    const g = actx.createGain(); g.gain.value = 0.9;
+    finSrc = actx.createBufferSource(); finSrc.buffer = b; finSrc.connect(g).connect(actx.destination); finSrc.start();
+  });
+}
+function stopFin() { try { if (finSrc) finSrc.stop(); } catch (e) {} finSrc = null; }
+function finishCue(place) {
+  const w = $('setFinWhen').value;
+  if (w === 'off') return;
+  if (w === 'first' && place !== 1) return;
+  playFin();
+}
+loadFin();
+
 // n = 3, 2, 1 倒數；0 = GO
 function countCue(n) {
   let m = cdMode(); if (m === 'off') return;
@@ -401,6 +450,7 @@ function unlockSpeech() {
     if (!actx) { const AC = window.AudioContext || window.webkitAudioContext; if (AC) actx = new AC(); }
     if (actx && actx.state === 'suspended') actx.resume();
     loadRec();
+    decodeFin();
   } catch (e) {}
   if (speechUnlocked || !('speechSynthesis' in window)) return;
   try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); speechUnlocked = true; } catch (e) {}
@@ -557,6 +607,19 @@ $('setCdSound').value = 'rec';
 try { const v = localStorage.getItem('m4wd-cdsound'); if (v) $('setCdSound').value = v; } catch (e) {}
 $('setCdSound').addEventListener('change', e => { try { localStorage.setItem('m4wd-cdsound', e.target.value); } catch (x) {} });
 $('btnPreview').addEventListener('click', previewCountdown);
+try { const v = localStorage.getItem('m4wd-finwhen'); if (v) $('setFinWhen').value = v; } catch (e) {}
+$('setFinWhen').addEventListener('change', e => { try { localStorage.setItem('m4wd-finwhen', e.target.value); } catch (x) {} });
+$('setFinFile').addEventListener('change', e => {
+  const f = e.target.files && e.target.files[0]; if (!f) return;
+  f.arrayBuffer().then(b => {
+    finRaw = b; finName = f.name; finBuf = null; finNote(`已設定：${f.name}`);
+    unlockSpeech(); decodeFin();
+    idbPut('finish', { name: f.name, data: b }).catch(() => finNote(`已設定：${f.name}（這支手機無法永久保存，重新開網頁要再選一次）`));
+  });
+});
+$('btnFinPreview').addEventListener('click', () => { unlockSpeech(); if (!finRaw) { finNote('還沒有選音樂檔'); return; } playFin(); });
+$('btnFinStop').addEventListener('click', stopFin);
+$('btnFinClear').addEventListener('click', () => { stopFin(); finRaw = null; finBuf = null; finName = ''; $('setFinFile').value = ''; idbPut('finish', null).catch(() => {}); finNote('已移除完賽音樂'); });
 $('setVoice').addEventListener('change', e => { try { localStorage.setItem('m4wd-voice', e.target.checked ? '1' : '0'); } catch (x) {} if (e.target.checked) speak('語音播報開啟'); });
 
 /* ── 匯出 ── */
