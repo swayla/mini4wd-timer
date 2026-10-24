@@ -182,7 +182,7 @@ dialog textarea { width: 100%; height: 220px; font-family: ui-monospace, Menlo, 
         <li><b>安裝 Arduino IDE</b>
           <p>到 <code>arduino.cc/en/software</code> 下載 Arduino IDE 2.x（Windows 選 Win 10 以上的安裝檔），一路按「下一步」裝好。</p></li>
         <li><b>安裝 USB 驅動程式（CP210x）</b>
-          <p>到 Silicon Labs 官網搜尋「CP210x USB to UART Bridge VCP Drivers」，下載 Windows 版、解壓後執行安裝。裝好後用<b>可以傳資料</b>的 Type-C 線接上開發板，打開「裝置管理員 → 連接埠 (COM 和 LPT)」，看到「Silicon Labs CP210x … (COM3)」之類就成功了。看不到的話先換一條線，有些線只能充電。</p></li>
+          <p>到 Silicon Labs 官網搜尋「CP210x USB to UART Bridge VCP Drivers」，在 Software 清單下載 <b>CP210x Universal Windows Driver</b>（Win 10／11 用這個），解壓縮後在 <code>silabser.inf</code> 上按右鍵 →「安裝」（Win 11 要先點「顯示其他選項」）。裝好後用<b>可以傳資料</b>的 Type-C 線接上開發板，打開「裝置管理員 → 連接埠 (COM 和 LPT)」，看到「Silicon Labs CP210x … (COM3)」之類就成功了。看不到的話先換一條線，有些線只能充電。</p></li>
         <li><b>中文使用者名稱要先改設定</b>（Windows 帳號名稱是英文的可以跳過）
           <p>使用者資料夾有中文時，編譯會出現奇怪的連結錯誤。先開一次 Arduino IDE 再關掉，在 C 槽建立兩個資料夾 <code>C:\Arduino15</code> 和 <code>C:\arduino-build</code>，然後用記事本打開 <code>C:\Users\你的名字\.arduinoIDE\arduino-cli.yaml</code>，把對應的行改成（沒有就加上）：</p>
 <pre>directories:
