@@ -112,6 +112,12 @@ dialog::backdrop { background: rgb(0 0 0 / .35); }
 dialog textarea { width: 100%; height: 220px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
 .drow { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
 .foot { font-size: 12px; color: var(--muted); }
+.guide { padding: 2px 14px 16px; }
+.guide ol { margin: 0; padding-left: 1.4em; display: grid; gap: 12px; }
+.guide li > b { display: block; }
+.guide p { margin: 4px 0 0; color: var(--muted); }
+.guide code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; background: var(--soft); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+.guide pre { margin: 6px 0 0; padding: 8px 10px; background: var(--soft); border-radius: 8px; font-size: 13px; overflow-x: auto; }
 @media (max-width: 520px) { .stats b { font-size: 15px; } td, th { padding: 4px 6px; } td.t { font-size: 14px; } .bhead { padding: 8px 10px 0; } .big { padding: 2px 10px; } }
 @media (prefers-reduced-motion: no-preference) { .overlay .n { animation: pop .35s ease-out; } @keyframes pop { from { transform: scale(1.25); opacity: .3; } } }
 </style>
@@ -166,6 +172,35 @@ dialog textarea { width: 100%; height: 220px; font-family: ui-monospace, Menlo, 
         <div class="frow"><button id="btnFinPreview" type="button">試聽</button><button id="btnFinStop" type="button">停止音樂</button><button id="btnFinClear" type="button">移除</button></div>
         <small id="finNote">從手機選一首音樂，只存在這支手機裡，不會上傳</small></div>
       <label class="check"><input id="setVoice" type="checkbox"> 語音播報圈時</label>
+    </div>
+  </details>
+
+  <details id="ideBox">
+    <summary>Arduino IDE 安裝說明（第一次燒錄程式前）</summary>
+    <div class="guide">
+      <ol>
+        <li><b>安裝 Arduino IDE</b>
+          <p>到 <code>arduino.cc/en/software</code> 下載 Arduino IDE 2.x（Windows 選 Win 10 以上的安裝檔），一路按「下一步」裝好。</p></li>
+        <li><b>安裝 USB 驅動程式（CP210x）</b>
+          <p>到 Silicon Labs 官網搜尋「CP210x USB to UART Bridge VCP Drivers」，下載 Windows 版、解壓後執行安裝。裝好後用<b>可以傳資料</b>的 Type-C 線接上開發板，打開「裝置管理員 → 連接埠 (COM 和 LPT)」，看到「Silicon Labs CP210x … (COM3)」之類就成功了。看不到的話先換一條線，有些線只能充電。</p></li>
+        <li><b>中文使用者名稱要先改設定</b>（Windows 帳號名稱是英文的可以跳過）
+          <p>使用者資料夾有中文時，編譯會出現奇怪的連結錯誤。先開一次 Arduino IDE 再關掉，在 C 槽建立兩個資料夾 <code>C:\Arduino15</code> 和 <code>C:\arduino-build</code>，然後用記事本打開 <code>C:\Users\你的名字\.arduinoIDE\arduino-cli.yaml</code>，把對應的行改成（沒有就加上）：</p>
+<pre>directories:
+  data: C:/Arduino15
+build_cache:
+  path: C:/arduino-build</pre>
+          <p>存檔後重開 IDE。這一步要在下一步安裝 ESP32 之前做；已經裝過的話，改完重新安裝一次 ESP32 套件和 TM1637 程式庫。</p></li>
+        <li><b>安裝 ESP32 開發板套件</b>
+          <p>「檔案 → 偏好設定」，在「其他開發板管理員網址」貼上 <code>https://espressif.github.io/arduino-esp32/package_esp32_index.json</code>，按確定。再到左邊「開發板管理員」搜尋 <code>esp32</code>，安裝 <b>esp32 by Espressif Systems</b>（檔案很大，要等幾分鐘）。</p></li>
+        <li><b>安裝 TM1637 程式庫</b>
+          <p>左邊「程式庫管理員」搜尋 <code>TM1637</code>，安裝作者是 <b>Avishay Orpaz</b> 的那一個。藍芽和其他功能 ESP32 套件裡都有，不用另外裝。</p></li>
+        <li><b>打開程式、選開發板</b>
+          <p>把 <code>mini4wd_timer.ino</code> 放進同名資料夾 <code>mini4wd_timer</code> 裡再打開。上方選單「工具 → 開發板 → esp32 → <b>ESP32 Dev Module</b>」，「工具 → 連接埠」選第 2 步看到的 COM 號碼。</p></li>
+        <li><b>上傳</b>
+          <p>按左上角向右的箭頭「上傳」。下面出現 <code>Connecting....</code> 一直停住時，按住開發板上的 <b>BOOT</b> 鍵，看到開始寫入百分比再放開。出現 <code>Hard resetting via RTS pin...</code> 就是燒好了。</p></li>
+        <li><b>確認有在跑</b>
+          <p>「工具 → 序列埠監控窗」，右下角鮑率選 <b>115200</b>，按一下開發板的 EN 鍵，會看到計時器的開機訊息。在上面輸入框打 <code>A</code> 或 <code>B</code> 按 Enter，可以模擬車子過線。看完記得關掉監控窗，再用這個網頁連藍芽。</p></li>
+      </ol>
     </div>
   </details>
 

@@ -25,8 +25,9 @@
 #include <Preferences.h>
 #include <TM1637Display.h>
 #include "esp_timer.h"
+#include "esp_system.h"
 
-#define FW_VERSION  "1.2.1"
+#define FW_VERSION  "1.3"
 #define DEVICE_NAME "Mini4WD-Timer"
 
 // ───────── 自訂型別（要放在所有函式之前，Arduino IDE 才找得到）─────────
@@ -161,6 +162,26 @@ void showCount(int i, int n) {
   uint8_t seg[4] = {0, 0, 0, 0};
   seg[1] = disp[i]->encodeDigit(n);
   disp[i]->setSegments(cars[i].active ? seg : SEG_BLANK);
+}
+
+// ───────── 顯示器即時跑秒 ─────────
+// 計時中顯示「這一圈跑了幾秒」；過線時停住顯示剛跑完的圈時 2 秒，再繼續跑秒
+uint32_t holdUntil[2] = {0, 0};
+uint32_t lastLiveMs = 0;
+void holdDisplay(int i, uint32_t ms) { holdUntil[i] = millis() + ms; }
+
+const char* resetReasonText() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:  return "POWERON";
+    case ESP_RST_SW:       return "SOFTWARE";
+    case ESP_RST_PANIC:    return "PANIC(crash)";
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT:      return "WATCHDOG";
+    case ESP_RST_BROWNOUT: return "BROWNOUT(power too low)";
+    case ESP_RST_EXT:      return "EN_BUTTON";
+    default:               return "OTHER";
+  }
 }
 
 // ───────── 蜂鳴器（非阻塞）─────────
@@ -304,6 +325,7 @@ void countLap(int car, int lane, int64_t t) {
   if (c.bestLap == 0 || lap < c.bestLap) c.bestLap = lap;
   sendCrossing(car, lane, c.laps, lap, c.total, t);
   showTime(car, lap);
+  holdDisplay(car, 2000);
   beep(60);
 }
 
@@ -322,6 +344,7 @@ void handleCrossing(int lane, int64_t t) {
       c.startT = c.lastT = t;
       sendCrossing(car, lane, 0, 0, 0, t);
       showTime(car, 0);
+      holdDisplay(car, 300);
       beep(60);
     } else {
       countLap(car, lane, t);
@@ -364,6 +387,7 @@ void updateCountdown() {
       cars[i].started = cars[i].active;
       cars[i].startT = cars[i].lastT = goT;
       disp[i]->setSegments(cars[i].active ? SEG_GO : SEG_BLANK);
+      holdDisplay(i, 1000);                      // 「Go」顯示 1 秒後開始跑秒
     }
     setState(ST_RACE);
     sendf("GO,%lld", (long long)goT);
@@ -398,7 +422,7 @@ void stopTiming() {
 
 // ───────── 指令處理 ─────────
 void sendStatus() {
-  sendf("HELLO,%s", FW_VERSION);
+  sendf("HELLO,%s,%s", FW_VERSION, resetReasonText());
   sendConfig();
   sendf("ST,%s", STATE_NAME[state]);
   for (int i = 0; i < 2; i++) {
@@ -482,9 +506,24 @@ void pollBeams() {
   if (changed) sendf("SENS,%d,%d", beamOk[0], beamOk[1]);
 }
 
+void updateLiveDisplays() {
+  if (millis() - lastLiveMs < 100) return;        // 每 0.1 秒更新一次
+  lastLiveMs = millis();
+  if (state != ST_RACE && state != ST_FREE) return;
+  int64_t now = esp_timer_get_time();
+  for (int i = 0; i < 2; i++) {
+    Car& c = cars[i];
+    if (!c.active || !c.started || c.finished) continue;
+    if ((int32_t)(millis() - holdUntil[i]) < 0) continue;
+    showTime(i, now - c.lastT);
+  }
+}
+
 // ───────── setup / loop ─────────
 void setup() {
   Serial.begin(115200);
+  delay(100);
+  Serial.printf("Reset reason: %s\n", resetReasonText());
   pinMode(PIN_LED, OUTPUT);
   if (PIN_BUZZER >= 0) { pinMode(PIN_BUZZER, OUTPUT); digitalWrite(PIN_BUZZER, LOW); }
   pinMode(PIN_BTN_START, INPUT_PULLUP);
@@ -539,6 +578,7 @@ void loop() {
   pollSerial();
 
   pollBeams();
+  updateLiveDisplays();
 
   if (buzzOffAt && (int32_t)(millis() - buzzOffAt) >= 0) { digitalWrite(PIN_BUZZER, LOW); buzzOffAt = 0; }
 
