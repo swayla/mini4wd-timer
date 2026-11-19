@@ -85,11 +85,17 @@ td:first-child, th:first-child { text-align: left; color: var(--muted); }
 td.t { font-family: var(--f-num); font-size: 16px; font-weight: 700; }
 tr.isbest td.t { color: var(--flag); }
 td.d { color: var(--muted); font-size: 12px; }
+td.t .kmh { display: block; font-family: var(--f-body, inherit); font-size: 11px; font-weight: 500; color: var(--muted); }
+.spd { display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: baseline; padding: 6px 14px; font-size: 13px; color: var(--muted); border-bottom: 1px solid var(--line); }
+.spd span { white-space: nowrap; }
+.spd b { font-family: var(--f-num); color: var(--ink); font-size: 15px; font-variant-numeric: tabular-nums; }
 .empty { padding: 16px 14px; color: var(--muted); font-size: 13px; }
 
 .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .controls .primary { padding: 12px 22px; font-size: 17px; }
 .controls .grow { flex: 1 1 auto; }
+.manual { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: 14px; color: var(--muted); }
+.manual button { padding: 6px 12px; font-size: 14px; }
 
 details { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
 summary { padding: 11px 14px; cursor: pointer; font-weight: 700; }
@@ -151,6 +157,12 @@ dialog textarea { width: 100%; height: 220px; font-family: ui-monospace, Menlo, 
     <span class="grow"></span>
     <button id="btnExport" type="button">匯出成績</button>
   </div>
+  <div class="manual">
+    <span>感測器漏抓時，手動記一圈：</span>
+    <button id="btnSimA" type="button">A 道過線</button>
+    <button id="btnSimB" type="button">B 道過線</button>
+    <span id="simNote"></span>
+  </div>
 
   <details id="setBox">
     <summary>設定</summary>
@@ -162,6 +174,9 @@ dialog textarea { width: 100%; height: 220px; font-family: ui-monospace, Menlo, 
       <div class="field"><label for="setDeb">防重複觸發（毫秒）</label><input id="setDeb" type="number" min="50" max="3000" step="50" value="300"><small>同一道觸發後忽略的時間</small></div>
       <div class="field"><label for="setIgn">起跑線忽略（毫秒）</label><input id="setIgn" type="number" min="0" max="10000" step="100" value="1500"><small>GO 後這段時間內過線不算一圈</small></div>
       <label class="check"><input id="setCross" type="checkbox"> 立體交叉軌道（每圈換道）</label>
+      <div class="field"><label for="setLenA">A 道出發一圈長度（公分）</label><input id="setLenA" type="number" min="0" max="10000" step="0.5" placeholder="例如 320" inputmode="decimal">
+        <label for="setLenB">B 道出發一圈長度（公分）</label><input id="setLenB" type="number" min="0" max="10000" step="0.5" placeholder="例如 345" inputmode="decimal">
+        <small>填了就會顯示每圈平均速度。沿車道中線從計時門繞一圈回到門量；有立體交叉就照車子實際跑的路線量。只填一格 = 兩道都用它，都留空 = 不顯示速度。</small></div>
       <div class="field"><label for="setCdSound">倒數音效</label>
         <select id="setCdSound"><option value="rec">自己的錄音（countdown.mp3）</option><option value="recbeep">自己的錄音＋賽車起跑嗶聲</option><option value="both">英文語音＋賽車起跑嗶聲</option><option value="voice">只有英文語音</option><option value="beep">只有賽車起跑嗶聲</option><option value="off">關閉</option></select>
         <button id="btnPreview" type="button">試聽倒數</button>
@@ -231,6 +246,7 @@ const S = {
   cfg: { laps: 3, cross: false, cars: 3, deb: 300, ign: 1500 },
   cars: [newCar(true), newCar(true)],
   sample: true,
+  paused: false, pauseLocal: 0,
 };
 function newCar(active) { return { active, started: false, lastLocal: 0, laps: [], best: 0, total: 0, finished: false, place: 0, summaryLaps: 0 }; }
 
@@ -245,10 +261,16 @@ function newCar(active) { return { active, started: false, lastLocal: 0, laps: [
 
 function addLap(i, n, lapUs, totalUs, lane) {
   const c = S.cars[i];
-  c.laps.push({ n, lapUs, totalUs, lane });
+  c.laps.push({ n, lapUs, totalUs, lane, from: S.cfg.cross ? (lane === 'A' ? 'B' : 'A') : lane });
   if (!c.best || lapUs < c.best) c.best = lapUs;
   c.total = totalUs;
 }
+
+/* ── 速度（一圈長度 ÷ 圈時）── */
+const LEN = { A: 0, B: 0 };
+function lapLen(from) { return LEN[from] || LEN.A || LEN.B; }      // 只填一格就兩道共用
+function kmh(l) { const cm = lapLen(l.from); return cm && l.lapUs ? cm / 100 / (l.lapUs / 1e6) * 3.6 : 0; }
+function fmtKmh(v) { return v ? v.toFixed(1) : ''; }
 
 /* ── 繪製看板 ── */
 function renderBoard(i) {
@@ -257,37 +279,56 @@ function renderBoard(i) {
   const startLane = i === 0 ? 'A' : 'B';
   const rows = c.laps.slice().reverse().map(l => {
     const d = l.lapUs - c.best;
-    return `<tr class="${l.lapUs === c.best ? 'isbest' : ''}"><td>${l.n}</td><td class="t">${fmt(l.lapUs)}</td><td class="d">${d ? '+' + (d / 1e6).toFixed(3) : '最快'}</td><td class="d">${l.lane}</td></tr>`;
+    const v = kmh(l);
+    return `<tr class="${l.lapUs === c.best ? 'isbest' : ''}"><td>${l.n}</td><td class="t">${fmt(l.lapUs)}${v ? `<span class="kmh">${fmtKmh(v)} km/h</span>` : ''}</td><td class="d">${d ? '+' + (d / 1e6).toFixed(3) : '最快'}</td><td class="d">${l.lane}</td></tr>`;
   }).join('');
   const lapCount = c.laps.length || c.summaryLaps;
   const target = S.mode !== 'FREE' && S.cfg.laps ? ` / ${S.cfg.laps}` : '';
   const last = c.laps.length ? c.laps[c.laps.length - 1].lapUs : 0;
+  const sp = c.laps.map(kmh).filter(v => v);
+  const spd = sp.length ? `<div class="spd"><span>最高 <b>${fmtKmh(Math.max(...sp))}</b></span><span>平均 <b>${fmtKmh(sp.reduce((a, b) => a + b, 0) / sp.length)}</b></span><span>km/h</span></div>` : '';
   el.innerHTML = `
     <div class="bhead"><span class="bname">${CAR_NAME[i]}</span>
       ${c.place ? `<span class="place">第 ${c.place} 名</span>` : `<span class="bsub">${c.active ? startLane + '道出發' : '未參賽'}</span>`}</div>
     <div class="big"><div class="lbl" id="lbl${i}">${liveLabel(c)}</div>
-      <div class="time live"><span id="live${i}">${(c.finished || c.stoppedRank) ? fmt(c.total) : (last ? fmt(last) : '0.000')}</span><span class="u">秒</span></div></div>
+      <div class="time live"><span id="live${i}">${(c.finished || c.stoppedRank) ? fmt(c.total) : (S.paused && c.started) ? ((S.pauseLocal - c.lastLocal) / 1000).toFixed(2) : (last ? fmt(last) : '0.000')}</span><span class="u">秒</span></div></div>
     <div class="stats">
       <div><span>圈數</span><b>${lapCount}${target}</b></div>
       <div><span>最快圈</span><b class="best">${c.best ? fmt(c.best) : '—'}</b></div>
       <div><span>總時間</span><b>${c.total ? fmt(c.total) : '—'}</b></div>
-    </div>
+    </div>${spd}
     <div class="laps">${rows ? `<table><thead><tr><th>圈</th><th>圈時（秒）</th><th>差最快</th><th>車道</th></tr></thead><tbody>${rows}</tbody></table>`
       : `<div class="empty">${c.active ? (c.started ? '計時中，等待過線…' : '車子第一次過線後開始計時') : '設定裡把這台車加入即可計時'}</div>`}</div>`;
 }
 function liveLabel(c) {
   if (c.stoppedRank) return '停止時總時間';
+  if (S.paused && c.started && !c.finished) return '暫停中';
   if (c.finished) return '完賽總時間';
   if (c.started && !c.finished && S.mode !== 'FINISHED' && !S.sample) return '本圈進行中';
   return '上一圈';
 }
 function renderMode() {
-  const m = { FREE: '過線計時', COUNTDOWN: '倒數中', RACE: '比賽中', FINISHED: S.stopped ? '已停止' : '完賽' }[S.mode] || S.mode;
-  const note = S.sample ? '示範資料' : S.mode === 'FINISHED' ? '成績保留中，按「開始比賽」或「重置」繼續' : S.mode === 'FREE' ? '每台車第一次過線開始計時' : S.mode === 'RACE' ? (S.cfg.laps ? `目標 ${S.cfg.laps} 圈` : '不限圈數') : '';
+  const m = S.paused ? '暫停中' : { FREE: '過線計時', COUNTDOWN: '倒數中', RACE: '比賽中', FINISHED: S.stopped ? '已停止' : '完賽' }[S.mode] || S.mode;
+  const note = S.sample ? '示範資料' : S.paused ? '時間停住、過線不算，按「繼續計時」或實體開始鍵接著算' : S.mode === 'FINISHED' ? '成績保留中，按「開始比賽」或「重置」繼續' : S.mode === 'FREE' ? '每台車第一次過線開始計時' : S.mode === 'RACE' ? (S.cfg.laps ? `目標 ${S.cfg.laps} 圈` : '不限圈數') : '';
   $('modeText').innerHTML = `${m}<small>${note}</small>`;
   const ready = S.conn !== 'none';
   $('btnStart').disabled = !ready; $('btnReset').disabled = !ready;
+  $('btnStart').textContent = startLabel();
+  $('btnSimA').disabled = $('btnSimB').disabled = !ready || S.paused || S.mode === 'COUNTDOWN' || S.mode === 'FINISHED';
+  $('simNote').textContent = S.cfg.cross ? '（立體交叉：自動判斷是哪台車）' : '（A 道 = 1號車，B 道 = 2號車）';
   $('btnStop').disabled = !ready || S.mode === 'FINISHED';
+}
+/* 開始鈕跟實體開始鍵一樣：計時中 = 暫停／繼續，沒在計時 = 倒數起跑，倒數中 = 取消 */
+function isTiming() {
+  if (S.sample) return false;
+  if (S.mode === 'RACE') return true;
+  return S.mode === 'FREE' && S.cars.some(c => c.active && c.started && !c.finished);
+}
+function startLabel() {
+  if (S.paused) return '繼續計時';
+  if (S.mode === 'COUNTDOWN') return '取消倒數';
+  if (isTiming()) return '暫停';
+  return '開始比賽（倒數同時起跑）';
 }
 function renderAll() { renderMode(); renderBoard(0); renderBoard(1); }
 
@@ -295,7 +336,7 @@ function renderAll() { renderMode(); renderBoard(0); renderBoard(1); }
 function tick() {
   for (let i = 0; i < 2; i++) {
     const c = S.cars[i], el = $('live' + i);
-    if (!el || S.sample) continue;
+    if (!el || S.sample || S.paused) continue;
     if (c.active && c.started && !c.finished && (S.mode === 'FREE' || S.mode === 'RACE')) {
       el.textContent = ((performance.now() - c.lastLocal) / 1000).toFixed(2);
     }
@@ -317,12 +358,14 @@ function onLine(line) {
       S.cars.forEach((c, i) => c.active = !!(S.cfg.cars & (1 << i)));
       fillSettings(); break;
     case 'ST':
-      S.mode = p[1];
+      S.mode = p[1]; S.paused = false;
       if (S.mode !== 'FINISHED') S.stopped = false;
       if (S.mode === 'COUNTDOWN') { clearSample(); resetCars(); stopFin(); }
       else if (S.mode !== 'RACE') $('overlay').hidden = true;
       break;
-    case 'RST': resetCars(); stopRec(); stopFin(); break;
+    case 'PAUSE': if (!S.paused) { S.paused = true; S.pauseLocal = now; toast('已暫停，按「繼續計時」或實體開始鍵接著算'); speak('暫停'); } break;
+    case 'RESUME': if (S.paused) { const dt = now - S.pauseLocal; S.cars.forEach(c => c.lastLocal += dt); } S.paused = false; toast('繼續計時'); speak('繼續'); break;
+    case 'RST': S.paused = false; resetCars(); stopRec(); stopFin(); break;
     case 'CD': showCount(p[1]); countCue(+p[1]); break;
     case 'GO':
       resetCars();
@@ -546,7 +589,7 @@ async function keepAwake() { try { wakeLock = await navigator.wakeLock.request('
 
 /* ── 示範模式：模擬計時器韌體的行為 ── */
 const sim = {
-  timers: [], mode: 'FREE', cars: null, goT: 0, fin: 0,
+  timers: [], mode: 'FREE', cars: null, goT: 0, fin: 0, paused: false, pauseT: 0,
   emit(line) { setTimeout(() => onLine(line), 0); },
   clear() { this.timers.forEach(clearTimeout); this.timers = []; },
   later(ms, fn) { this.timers.push(setTimeout(fn, ms)); },
@@ -558,19 +601,19 @@ const sim = {
     this.runCars(true);
   },
   reset(silent) {
-    this.clear(); this.mode = 'FREE'; this.fin = 0;
+    this.clear(); this.mode = 'FREE'; this.fin = 0; this.paused = false;
     this.cars = [0, 1].map(i => ({ active: !!(this.cfg.cars & (1 << i)), started: false, laps: 0, startT: 0, lastT: 0, lane: i, finished: false }));
     if (!silent) { this.emit('ST,FREE'); this.emit('RST'); }
   },
-  runCars(free) {
+  runCars(free, first) {
     this.cars.forEach((c, i) => {
-      if (!c.active) return;
+      if (!c.active || c.finished) return;
       const base = i ? 5.55 : 5.3;
       const go = (delay) => this.later(delay, () => {
         this.cross(i);
         if (this.mode !== 'FINISHED' && !c.finished) go((base + Math.random() * 0.35) * 1000);
       });
-      go(free ? 600 + i * 900 : 250 + i * 120);
+      go((first || 0) + (free ? 600 + i * 900 : 250 + i * 120));
     });
   },
   cross(i) {
@@ -586,8 +629,29 @@ const sim = {
       if (this.cars.every(k => !k.active || k.finished)) { this.mode = 'FINISHED'; this.emit('ST,FINISHED'); this.emit('END'); this.clear(); }
     }
   },
+  timing() { return this.mode === 'RACE' || (this.mode === 'FREE' && this.cars.some(c => c.active && c.started && !c.finished)); },
+  togglePause() {
+    const t = this.now();
+    if (this.paused) {
+      const dt = t - this.pauseT; this.paused = false;
+      this.cars.forEach(c => { if (c.started) { c.startT += dt; c.lastT += dt; } }); this.goT += dt;
+      this.emit('RESUME,' + dt); this.runCars(this.mode === 'FREE', 800);
+    } else { this.paused = true; this.pauseT = t; this.clear(); this.emit('PAUSE,' + t); }
+  },
   command(cmd) {
     const [k, v] = cmd.split(',');
+    if (k === 'SIM') {
+      if (this.paused || this.mode === 'COUNTDOWN' || this.mode === 'FINISHED') return;
+      const lane = v === 'B' ? 1 : 0, i = this.cars.findIndex(c => c.active && !c.finished && c.lane === lane);
+      if (i < 0) { this.emit('U,' + (lane ? 'B' : 'A')); return; }
+      this.cross(i); return;
+    }
+    if (k === 'BTN') {
+      if (this.mode === 'COUNTDOWN') { this.reset(); this.runCars(true, 4000); }
+      else if (this.paused || this.timing()) this.togglePause();
+      else this.command('START');
+      return;
+    }
     if (k === 'START') {
       this.reset(true); this.mode = 'COUNTDOWN'; this.emit('ST,COUNTDOWN');
       [3, 2, 1].forEach((n, idx) => this.later(idx * 1000, () => this.emit('CD,' + n)));
@@ -596,11 +660,11 @@ const sim = {
         this.cars.forEach(c => { c.started = c.active; c.startT = c.lastT = this.goT; });
         this.emit('ST,RACE'); this.emit('GO,' + this.goT); this.runCars(false);
       });
-    } else if (k === 'RESET') { this.reset(); this.runCars(true); }
+    } else if (k === 'RESET') { this.reset(); this.runCars(true, 4000); }
     else if (k === 'STOP') {
       if (this.mode === 'FINISHED') return;
-      if (this.mode === 'COUNTDOWN') { this.reset(); this.runCars(true); return; }
-      this.clear();
+      if (this.mode === 'COUNTDOWN') { this.reset(); this.runCars(true, 4000); return; }
+      this.clear(); this.paused = false;
       if (this.mode === 'RACE') {
         this.cars.map((c, i) => ({ c, i })).filter(o => o.c.active && !o.c.finished)
           .sort((a, b) => b.c.laps - a.c.laps || (a.c.lastT - a.c.startT) - (b.c.lastT - b.c.startT))
@@ -638,6 +702,15 @@ bindSetting('setDeb', 'DEB', e => parseInt(e.value) || 300);
 bindSetting('setIgn', 'IGN', e => parseInt(e.value) || 0);
 bindSetting('setCross', 'CROSS', e => e.checked ? 1 : 0);
 try { $('setVoice').checked = localStorage.getItem('m4wd-voice') === '1'; } catch (e) {}
+['A', 'B'].forEach(k => {
+  const el = $('setLen' + k);
+  try { const v = localStorage.getItem('m4wd-len' + k); if (v) { el.value = v; LEN[k] = +v || 0; } } catch (e) {}
+  el.addEventListener('input', () => {
+    LEN[k] = Math.max(0, +el.value || 0);
+    try { localStorage.setItem('m4wd-len' + k, el.value); } catch (x) {}
+    renderAll();
+  });
+});
 $('setCdSound').value = 'rec';
 try { const v = localStorage.getItem('m4wd-cdsound'); if (v) $('setCdSound').value = v; } catch (e) {}
 $('setCdSound').addEventListener('change', e => { try { localStorage.setItem('m4wd-cdsound', e.target.value); } catch (x) {} });
@@ -659,8 +732,8 @@ $('setVoice').addEventListener('change', e => { try { localStorage.setItem('m4wd
 
 /* ── 匯出 ── */
 function buildCsv() {
-  const out = ['車號,圈,圈時(秒),累計(秒),車道'];
-  S.cars.forEach((c, i) => c.laps.forEach(l => out.push(`${i + 1},${l.n},${fmt(l.lapUs)},${fmt(l.totalUs)},${l.lane}`)));
+  const out = ['車號,圈,圈時(秒),累計(秒),車道,速度(km/h)'];
+  S.cars.forEach((c, i) => c.laps.forEach(l => out.push(`${i + 1},${l.n},${fmt(l.lapUs)},${fmt(l.totalUs)},${l.lane},${fmtKmh(kmh(l))}`)));
   S.cars.forEach((c, i) => { if (c.best) out.push(`${i + 1},最快圈,${fmt(c.best)},,`); if (c.place) out.push(`${i + 1},名次,${c.place},${fmt(c.total)},`); });
   return out.join('\n');
 }
@@ -677,9 +750,11 @@ $('btnConnect').addEventListener('click', () => {
   connectBle();
 });
 $('btnDemo').addEventListener('click', () => S.conn === 'demo' ? stopDemo() : startDemo());
-$('btnStart').addEventListener('click', () => { unlockSpeech(); send('START'); });
+$('btnStart').addEventListener('click', () => { unlockSpeech(); send('BTN'); });
 $('btnReset').addEventListener('click', () => send('RESET'));
 $('btnStop').addEventListener('click', () => send('STOP'));
+$('btnSimA').addEventListener('click', () => send('SIM,A'));
+$('btnSimB').addEventListener('click', () => send('SIM,B'));
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.conn !== 'none') keepAwake(); });
 
 if (!navigator.bluetooth) showBtNotice();
